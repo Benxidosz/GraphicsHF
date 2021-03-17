@@ -40,8 +40,12 @@ const char * const vertexSource = R"(
 
 	uniform mat4 MVP;			// uniform variable, the Model-View-Projection transformation matrix
 	layout(location = 0) in vec2 vp;	// Varying input: vp = vertex position is expected in attrib array 0
+	layout(location = 1) in vec3 vc;
+
+    out vec3 getColor;
 
 	void main() {
+        getColor = vc;
 		gl_Position = vec4(vp.x, vp.y, 0, 1) * MVP;		// transform vp from modeling space to normalized device space
 	}
 )";
@@ -53,9 +57,13 @@ const char * const fragmentSource = R"(
 	
 	uniform vec3 color;		// uniform variable, the color of the primitive
 	out vec4 outColor;		// computed color of the current pixel
+    in vec3 getColor;
 
 	void main() {
-		outColor = vec4(color, 1);	// computed color is the color of the primitive
+        if (getColor != 0)
+            outColor = vec4(getColor, 1);
+        else
+		    outColor = vec4(color, 1);	// computed color is the color of the primitive
 	}
 )";
 class Camera2D {
@@ -82,10 +90,86 @@ public:
 GPUProgram gpuProgram;
 Camera2D camera;
 
+bool operator!=(vec3 a, vec3 b) {
+    return (a.x != b.x and a.y != b.y and a.z != b.z);
+}
+
+bool operator==(vec3 a, vec3 b) {
+    return (a.x == b.x and a.y == b.y and a.z == b.z);
+}
+
+bool operator==(vec4 a, vec4 b) {
+    return (a.x == b.x and a.y == b.y and a.z == b.z and a.w == b.w);
+}
+
+vec4 from2vec2(vec2 a, vec2 b) {
+    return vec4(a.x, a.y, b.x, b.y);
+}
+
+int nv = 100;
+
+class Node {
+    unsigned int vaoCircle[2], vboCircle[2];
+    vec3 pos;
+    vec3 color[2];
+
+public:
+    Node(vec3 pos, vec3 color1, vec3 color2) {
+        this->pos = pos;
+        color[0] = color1;
+        color[1] = color2;
+        //Generate circle vertexes.
+        vec2 vertices[nv];
+        vec2 verticesOut[nv];
+
+        for (int i = 0; i < nv; ++i) {
+            float fi = i * 2 * M_PI / nv;
+            vertices[i] = vec2(pos.x + 5 * cosf(fi),pos.y + 5 * sinf(fi));
+            verticesOut[i] = vec2(pos.x + 2.5 * cosf(fi),pos.y + 2.5 * sinf(fi));
+        }
+
+        //Make Nodes vaoCircle/vbo
+        glGenVertexArrays(2, vaoCircle);
+        glBindVertexArray(vaoCircle[0]);
+
+        glGenBuffers(2, vboCircle);
+        glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * nv, vertices, GL_STATIC_DRAW);// we do not change later
+
+        glEnableVertexAttribArray(0);  // AttribArray 0
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+
+        glBindVertexArray(vaoCircle[1]);
+
+        glBindBuffer(GL_ARRAY_BUFFER, vboCircle[1]);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * nv, verticesOut, GL_STATIC_DRAW);// we do not change later
+
+        glEnableVertexAttribArray(0);  // AttribArray 0
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+    }
+
+    vec2 get2d() {
+        return vec2(pos.x, pos.y);
+    }
+
+    bool diffrent(vec3 c1, vec3 c2) {
+        return color[0] != c1 || color[0] != c2 || color[1] != c1 || color[1] != c2;
+    }
+
+    void Draw(mat4 TVPmat) {
+        gpuProgram.setUniform(color[0], "color");
+        glBindVertexArray(vaoCircle[0]);
+        glDrawArrays(GL_TRIANGLE_FAN, 0 , nv);
+
+        gpuProgram.setUniform(color[1], "color");
+        glBindVertexArray(vaoCircle[1]);
+        glDrawArrays(GL_TRIANGLE_FAN, 0 , nv);
+    }
+};
+
 class Graph {
-    unsigned int vaoNodes, vboNodes;
     unsigned int vaoEdges, vboEdges;
-    std::vector<vec3> nodes;
+    std::vector<Node> nodes;
     std::vector<vec4> edges;
 
     void generateNodes() {
@@ -97,43 +181,59 @@ class Graph {
             bool near = false;
 
             for (int i = 0; i < nodes.size(); ++i) {
-                vec2 tmp = vec2(nodes[i].x, nodes[i].y);
+                vec2 tmp = nodes[i].get2d();
                 if (sqrt(pow(tmp.x - randX, 2) + pow(tmp.y - randY, 2)) < 20) {
                     near = true;
-                    printf("x1 %f x2 %f y1 %f y2 %f d: %f\n", tmp.x, randX, tmp.y, randY, dot(tmp,vec2(randX, randY)));
                     continue;
                 }
             }
-
-            if (!near)
-                nodes.emplace_back(vec3(randX, randY, sqrt(pow(randX, 2) + pow(randY, 2) + 1)));
+            vec3 color1;
+            vec3 color2;
+            bool identical = true;
+            while (identical) {
+                identical = false;
+                color1 = vec3((float) (rand() % 100) / 100.0f, (float) (rand() % 100) / 100.0f,
+                                   (float) (rand() % 100) / 100.0f);
+                color2 = vec3((float) (rand() % 100) / 100.0f, (float) (rand() % 100) / 100.0f,
+                                   (float) (rand() % 100) / 100.0f);
+                for (auto i = nodes.begin(); i != nodes.end(); i++) {
+                    if (!(*i).diffrent(color1, color2))
+                        identical = true;
+                }
+            }
+            if (!near && color1 != color2)
+                nodes.emplace_back(Node(vec3(randX, randY, sqrt(pow(randX, 2) + pow(randY, 2) + 1)), color1, color2));
         }
     }
 
     void generateEdges() {
         int maxEdgenum = (50 * 49) / 2;
+        std::vector<vec2> pairs;
         while ((float)edges.size() / (float)maxEdgenum < 0.05) {
             int n1 = rand() % 50;
             int n2 = rand() % 50;
 
-            vec2 n1Pos = vec2(nodes[n1].x, nodes[n1].y);
-            vec2 n2Pos = vec2(nodes[n2].x, nodes[n2].y);
+            vec2 n1Pos = nodes[n1].get2d();
+            vec2 n2Pos = nodes[n2].get2d();
 
             if (n1 != n2) {
                 bool has = false;
-                for (auto iter = edges.begin(); iter != edges.end(); iter++) {
-                    vec4 tmp = *iter;
+                for (auto iter = pairs.begin(); iter != pairs.end(); iter++) {
+                    vec2 tmp = *iter;
 
-                    if ((tmp.x == n1Pos.x and tmp.y == n1Pos.x and tmp.z == n2Pos.x and tmp.w == n2Pos.x)
-                        or (tmp.x == n2Pos.x and tmp.y == n2Pos.x and tmp.z == n1Pos.x and tmp.w == n1Pos.x)) {
+                    if (tmp == vec2(n1, n2) || tmp == vec2(n2, n1)) {
                         has = true;
-                        continue;
                     }
                 }
-                if (!has)
-                    edges.emplace_back(n1Pos.x, n1Pos.y , n2Pos.x, n2Pos.y);
+                if (!has) {
+                    edges.emplace_back(n1Pos.x, n1Pos.y, n2Pos.x, n2Pos.y);
+                    pairs.emplace_back(n1, n2);
+                }
             }
         }
+        printf("%d\n", edges.size());
+        for (int i = 0; i < edges.size(); ++i)
+            printf("x1: %f y1: %f x2: %f y2: %f\n", edges[i].x, edges[i].y, edges[i].z, edges[i].w);
     }
 public:
     void Create() {
@@ -143,24 +243,7 @@ public:
         //Generate edges.
         generateEdges();
 
-        //uploadable (x, y)
-        vec2 upload[50];
-
-        for (int i = 0; i < 50; ++i)
-            upload[i] = vec2(nodes[i].x, nodes[i].y);
-
-        //Make Nodes vao/vbo
-        glGenVertexArrays(1, &vaoNodes);
-        glBindVertexArray(vaoNodes);
-
-        glGenBuffers(1, &vboNodes);
-        glBindBuffer(GL_ARRAY_BUFFER, vboNodes);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * 50, upload, GL_STATIC_DRAW);// we do not change later
-
-        glEnableVertexAttribArray(0);  // AttribArray 0
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
-
-        //Make Edge vao/vbo
+        //Make Edge vaoCircle/vbo
         glGenVertexArrays(1, &vaoEdges);
         glBindVertexArray(vaoEdges);
 
@@ -169,7 +252,7 @@ public:
         glBufferData(GL_ARRAY_BUFFER, sizeof(vec4) * edges.size(), &edges[0], GL_STATIC_DRAW);// we do not change later
 
         glEnableVertexAttribArray(0);  // AttribArray 0
-        glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
     }
 
     void Draw() {
@@ -180,13 +263,11 @@ public:
         gpuProgram.setUniform(vec3(1,1,0), "color");
         glLineWidth(2.0f);
         glBindVertexArray(vaoEdges);
-        glDrawArrays(GL_LINES, 0 , edges.size());
+        glDrawArrays(GL_LINES, 0 , edges.size() * 2);
 
         //draw Nodes
-        gpuProgram.setUniform(vec3(1,0,0), "color");
-        glPointSize(10.0f);
-        glBindVertexArray(vaoNodes);
-        glDrawArrays(GL_POINTS, 0 , 50);
+        for (auto i = nodes.begin(); i != nodes.end(); i++)
+            (*i).Draw(VPTransform);
     }
 };
 
