@@ -39,14 +39,14 @@ const char * const vertexSource = R"(
 	precision highp float;		// normal floats, makes no difference on desktop computers
 
 	uniform mat4 MVP;			// uniform variable, the Model-View-Projection transformation matrix
-	layout(location = 0) in vec2 vp;	// Varying input: vp = vertex position is expected in attrib array 0
+	layout(location = 0) in vec3 vp;	// Varying input: vp = vertex position is expected in attrib array 0
 	layout(location = 1) in vec3 vc;
 
     out vec3 getColor;
 
 	void main() {
         getColor = vc;
-		gl_Position = vec4(vp.x, vp.y, 0, 1) * MVP;		// transform vp from modeling space to normalized device space
+		gl_Position = vec4(vp.x, vp.y, 0, vp.z) * MVP;		// transform vp from modeling space to normalized device space
 	}
 )";
 
@@ -66,30 +66,8 @@ const char * const fragmentSource = R"(
 		    outColor = vec4(color, 1);	// computed color is the color of the primitive
 	}
 )";
-class Camera2D {
-    vec2 wCenter;
-    vec2 wSize;
-
-public:
-    Camera2D() : wCenter(0, 0), wSize(300, 300) { }
-
-    mat4 V() { return TranslateMatrix(-wCenter); }
-    mat4 P() { return ScaleMatrix(vec2(2 / wSize.x, 2 / wSize.y)); }
-
-    mat4 Vinv() { return TranslateMatrix(wCenter); };
-    mat4 Pinv() { return ScaleMatrix(vec2(wSize.x / 2, wSize.y / 2)); };
-
-    void Zoom(float s) { wSize = wSize * s; }
-    void Pan(vec2 t) { wCenter = wCenter + t; }
-
-    vec2 getSize() {
-        return wSize;
-    }
-};
 
 GPUProgram gpuProgram;
-Camera2D camera;
-
 bool operator!=(vec3 a, vec3 b) {
     return (a.x != b.x and a.y != b.y and a.z != b.z);
 }
@@ -102,30 +80,31 @@ bool operator==(vec4 a, vec4 b) {
     return (a.x == b.x and a.y == b.y and a.z == b.z and a.w == b.w);
 }
 
-vec4 from2vec2(vec2 a, vec2 b) {
-    return vec4(a.x, a.y, b.x, b.y);
+vec3 toHyperbola(vec2 pos) {
+    float d = sqrtf(powf(pos.x, 2) + powf(pos.y, 2));
+    vec2 v = {pos.x / d, pos.y / d};
+    return {v.x * sinhf(d), v.y * sinhf(d), coshf(d)};
 }
 
 int nv = 100;
 
 class Node {
-    unsigned int vaoCircle[2], vboCircle[2];
-    vec3 pos;
+    unsigned int vaoCircle[2]{}, vboCircle[2]{};
+    vec2 pos;
     vec3 color[2];
 
 public:
-    Node(vec3 pos, vec3 color1, vec3 color2) {
-        this->pos = pos;
+    Node(vec2 pos, vec3 color1, vec3 color2) : pos(pos) {
         color[0] = color1;
         color[1] = color2;
         //Generate circle vertexes.
-        vec2 vertices[nv];
-        vec2 verticesOut[nv];
+        vec3 vertices[nv];
+        vec3 verticesOut[nv];
 
         for (int i = 0; i < nv; ++i) {
             float fi = i * 2 * M_PI / nv;
-            vertices[i] = vec2(pos.x + 5 * cosf(fi),pos.y + 5 * sinf(fi));
-            verticesOut[i] = vec2(pos.x + 2.5 * cosf(fi),pos.y + 2.5 * sinf(fi));
+            vertices[i] = toHyperbola({pos.x + 0.06f * cosf(fi), pos.y + 0.06f * sinf(fi)});
+            verticesOut[i] = toHyperbola({pos.x + 0.03f * cosf(fi), pos.y + 0.03f * sinf(fi)});
         }
 
         //Make Nodes vaoCircle/vbo
@@ -133,27 +112,39 @@ public:
         glBindVertexArray(vaoCircle[0]);
 
         glGenBuffers(2, vboCircle);
-        glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * nv, vertices, GL_STATIC_DRAW);// we do not change later
 
+        glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, vertices, GL_STATIC_DRAW);// we do not change later
         glEnableVertexAttribArray(0);  // AttribArray 0
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
 
         glBindVertexArray(vaoCircle[1]);
 
         glBindBuffer(GL_ARRAY_BUFFER, vboCircle[1]);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * nv, verticesOut, GL_STATIC_DRAW);// we do not change later
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, verticesOut, GL_STATIC_DRAW);// we do not change later
 
         glEnableVertexAttribArray(0);  // AttribArray 0
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
     }
 
     vec2 get2d() {
-        return vec2(pos.x, pos.y);
+        return {pos.x, pos.y};
     }
 
-    bool diffrent(vec3 c1, vec3 c2) {
+    vec3 hyperPos() {
+        return toHyperbola({pos.x, pos.y});
+    }
+
+    bool different(vec3 c1, vec3 c2) {
         return color[0] != c1 || color[0] != c2 || color[1] != c1 || color[1] != c2;
+    }
+
+    bool different(vec3 c1, vec3 c2, float avg) {
+        return (length(c1 - color[0]) < avg and length(c2 - color[1]) < avg);
+    }
+
+    void print() {
+        printf("x: %f y: %f\n", pos.x, pos.y);
     }
 
     void Draw(mat4 TVPmat) {
@@ -167,22 +158,28 @@ public:
     }
 };
 
+struct Edge {
+    float x1, y1, w1, x2, y2, w2;
+
+    Edge(float x1, float y1, float w1, float x2, float y2, float w2)
+    : x1(x1), y1(y1), w1(w1), x2(x2), y2(y2), w2(w2) { }
+};
+
 class Graph {
     unsigned int vaoEdges, vboEdges;
     std::vector<Node> nodes;
-    std::vector<vec4> edges;
+    std::vector<Edge> edges;
 
     void generateNodes() {
-        vec2 wSize = camera.getSize();
         while (nodes.size() < 50) {
-            float randX = rand() % ((int) wSize.x - 20) - (int) wSize.x / 2 + 10;
-            float randY = rand() % ((int) wSize.y - 20) - (int) wSize.y / 2 + 10;
+            float randX = ((float)(rand() % 300 - 150) / 100.0f);
+            float randY = ((float)(rand() % 300 - 150) / 100.0f);
 
             bool near = false;
 
-            for (int i = 0; i < nodes.size(); ++i) {
-                vec2 tmp = nodes[i].get2d();
-                if (sqrt(pow(tmp.x - randX, 2) + pow(tmp.y - randY, 2)) < 20) {
+            for (auto & node : nodes) {
+                vec2 tmp = node.get2d();
+                if (length(vec2(randX, randY) - tmp) < 0.15) {
                     near = true;
                     continue;
                 }
@@ -192,17 +189,17 @@ class Graph {
             bool identical = true;
             while (identical) {
                 identical = false;
-                color1 = vec3((float) (rand() % 100) / 100.0f, (float) (rand() % 100) / 100.0f,
-                                   (float) (rand() % 100) / 100.0f);
-                color2 = vec3((float) (rand() % 100) / 100.0f, (float) (rand() % 100) / 100.0f,
-                                   (float) (rand() % 100) / 100.0f);
-                for (auto i = nodes.begin(); i != nodes.end(); i++) {
-                    if (!(*i).diffrent(color1, color2))
+                color1 = vec3((float) (rand() % 80) / 100.0f + 0.2, (float) (rand() % 80) / 100.0f + 0.2,
+                                   (float) (rand() % 80) / 100.0f + 0.2);
+                color2 = vec3((float) (rand() % 80) / 100.0f + 0.2, (float) (rand() % 80) / 100.0f + 0.2,
+                                   (float) (rand() % 80) / 100.0f + 0.2);
+                for (auto & node : nodes) {
+                    if (!node.different(color1, color2) or node.different(color1, color2, 0.3))
                         identical = true;
                 }
             }
-            if (!near && color1 != color2)
-                nodes.emplace_back(Node(vec3(randX, randY, sqrt(pow(randX, 2) + pow(randY, 2) + 1)), color1, color2));
+            if (!near and color1 != color2 and length(color2 - color1) > 0.9)
+                nodes.emplace_back(Node({randX, randY}, color1, color2));
         }
     }
 
@@ -213,32 +210,32 @@ class Graph {
             int n1 = rand() % 50;
             int n2 = rand() % 50;
 
-            vec2 n1Pos = nodes[n1].get2d();
-            vec2 n2Pos = nodes[n2].get2d();
+            vec3 n1Pos = nodes[n1].hyperPos();
+            vec3 n2Pos = nodes[n2].hyperPos();
 
             if (n1 != n2) {
                 bool has = false;
-                for (auto iter = pairs.begin(); iter != pairs.end(); iter++) {
-                    vec2 tmp = *iter;
-
+                for (auto tmp : pairs) {
                     if (tmp == vec2(n1, n2) || tmp == vec2(n2, n1)) {
                         has = true;
                     }
                 }
                 if (!has) {
-                    edges.emplace_back(n1Pos.x, n1Pos.y, n2Pos.x, n2Pos.y);
+
+                    edges.emplace_back(Edge(n1Pos.x, n1Pos.y, n1Pos.z, n2Pos.x, n2Pos.y, n2Pos.z));
                     pairs.emplace_back(n1, n2);
                 }
             }
         }
-        printf("%d\n", edges.size());
-        for (int i = 0; i < edges.size(); ++i)
-            printf("x1: %f y1: %f x2: %f y2: %f\n", edges[i].x, edges[i].y, edges[i].z, edges[i].w);
     }
+
 public:
     void Create() {
         //Generate Nodes location.
         generateNodes();
+
+        for (auto & node : nodes)
+            node.print();
 
         //Generate edges.
         generateEdges();
@@ -249,14 +246,17 @@ public:
 
         glGenBuffers(1, &vboEdges);
         glBindBuffer(GL_ARRAY_BUFFER, vboEdges);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vec4) * edges.size(), &edges[0], GL_STATIC_DRAW);// we do not change later
+        glBufferData(GL_ARRAY_BUFFER, sizeof(Edge) * edges.size(), &edges[0], GL_STATIC_DRAW);// we do not change later
 
         glEnableVertexAttribArray(0);  // AttribArray 0
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
     }
 
     void Draw() {
-        mat4 VPTransform = camera.V() * camera.P();
+        mat4 VPTransform = {1, 0, 0, 0,
+                            0, 1, 0, 0,
+                            0, 0, 1, 0,
+                            0, 0, 0, 1};
         gpuProgram.setUniform(VPTransform, "MVP");
 
         //draw Edges
@@ -296,10 +296,6 @@ void onDisplay() {
 
 // Key of ASCII code pressed
 void onKeyboard(unsigned char key, int pX, int pY) {
-	if (key == 'd') camera.Pan(vec2(1, 0));
-	if (key == 'w') camera.Pan(vec2(0, 1));
-	if (key == 'a') camera.Pan(vec2(-1, 0));
-	if (key == 's') camera.Pan(vec2(0, -1));
 	glutPostRedisplay();
 }
 
@@ -323,14 +319,14 @@ void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel co
 
 	char * buttonStat;
 	switch (state) {
-	case GLUT_DOWN: buttonStat = "pressed"; break;
-	case GLUT_UP:   buttonStat = "released"; break;
+        case GLUT_DOWN: buttonStat = "pressed"; break;
+        case GLUT_UP:   buttonStat = "released"; break;
 	}
 
 	switch (button) {
-	case GLUT_LEFT_BUTTON:   printf("Left button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);   break;
-	case GLUT_MIDDLE_BUTTON: printf("Middle button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY); break;
-	case GLUT_RIGHT_BUTTON:  printf("Right button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);  break;
+        case GLUT_LEFT_BUTTON:   printf("Left button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);   break;
+        case GLUT_MIDDLE_BUTTON: printf("Middle button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY); break;
+        case GLUT_RIGHT_BUTTON:  printf("Right button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);  break;
 	}
 }
 
