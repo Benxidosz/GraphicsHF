@@ -34,40 +34,65 @@
 #include "framework.h"
 
 // vertex shader in GLSL: It is a Raw string (C++11) since it contains new line characters
-const char * const vertexSource = R"(
+const char * const vertexNode = R"(
 	#version 330				// Shader 3.3
 	precision highp float;		// normal floats, makes no difference on desktop computers
 
 	uniform mat4 MVP;			// uniform variable, the Model-View-Projection transformation matrix
 	layout(location = 0) in vec3 vp;	// Varying input: vp = vertex position is expected in attrib array 0
-	layout(location = 1) in vec3 vc;
+    layout(location = 1) in vec2 uv;
 
-    out vec3 getColor;
+    out vec2 textCoord;
 
 	void main() {
-        getColor = vc;
+        textCoord = uv;
 		gl_Position = vec4(vp.x, vp.y, 0, vp.z) * MVP;		// transform vp from modeling space to normalized device space
 	}
 )";
 
 // fragment shader in GLSL
-const char * const fragmentSource = R"(
+const char * const fragmentNode = R"(
 	#version 330			// Shader 3.3
 	precision highp float;	// normal floats, makes no difference on desktop computers
-	
-	uniform vec3 color;		// uniform variable, the color of the primitive
+
+    uniform sampler2D textureUnit;
+    in vec2 textCoord;
+
 	out vec4 outColor;		// computed color of the current pixel
-    in vec3 getColor;
 
 	void main() {
-        if (getColor != 0)
-            outColor = vec4(getColor, 1);
-        else
-		    outColor = vec4(color, 1);	// computed color is the color of the primitive
+        outColor = texture(textureUnit, textCoord);	// computed color is the color of the primitive
 	}
 )";
 
-GPUProgram gpuProgram;
+// vertex shader in GLSL: It is a Raw string (C++11) since it contains new line characters
+const char * const vertexEdge = R"(
+	#version 330				// Shader 3.3
+	precision highp float;		// normal floats, makes no difference on desktop computers
+
+	uniform mat4 MVP;			// uniform variable, the Model-View-Projection transformation matrix
+	layout(location = 0) in vec3 vp;	// Varying input: vp = vertex position is expected in attrib array 0
+
+	void main() {
+		gl_Position = vec4(vp.x, vp.y, 0, vp.z) * MVP;		// transform vp from modeling space to normalized device space
+	}
+)";
+
+// fragment shader in GLSL
+const char * const fragmentEdge = R"(
+	#version 330			// Shader 3.3
+	precision highp float;	// normal floats, makes no difference on desktop computers
+
+	uniform vec3 color;		// uniform variable, the color of the primitive
+	out vec4 outColor;		// computed color of the current pixel
+
+	void main() {
+        outColor = vec4(color, 1);	// computed color is the color of the primitive
+	}
+)";
+
+GPUProgram gpuProgramNode, gpuProgramEdge;
+
 bool operator!=(vec3 a, vec3 b) {
     return (a.x != b.x and a.y != b.y and a.z != b.z);
 }
@@ -89,9 +114,28 @@ vec3 toHyperbola(vec2 pos) {
 int nv = 100;
 
 class Node {
-    unsigned int vaoCircle[2]{}, vboCircle[2]{};
+    unsigned int vaoCircle{}, vboCircle[2]{};
     vec2 pos;
     vec3 color[2];
+    Texture * texture;
+
+    void generateTexture(vec3 c1, vec3 c2) {
+        std::vector<vec4> textureVec;
+        for (int i = 0; i < 50; ++i)
+            for (int j = 0; j < 50; ++j) {
+                float x = (float)i / 50.0f;
+                float y = (float)j / 50.0f;
+                /*if (powf(x - 0.5, 2) + powf(y - 0.5, 2) <= 0.1)
+                    textureVec.emplace_back(vec4(c2.x, c2.y, c2.z, 1));
+                else
+                    textureVec.emplace_back(vec4(c1.x, c1.y, c1.z, 1));*/
+                if (abs(x - 0.5f) < 0.1f or abs(y - 0.5f) < 0.1)
+                    textureVec.emplace_back(vec4(c2.x, c2.y, c2.z, 1));
+                else
+                    textureVec.emplace_back(vec4(c1.x, c1.y, c1.z, 1));
+            }
+        texture = new Texture(50, 50, textureVec);
+    }
 
 public:
     Node(vec2 pos, vec3 color1, vec3 color2) : pos(pos) {
@@ -99,17 +143,20 @@ public:
         color[1] = color2;
         //Generate circle vertexes.
         vec3 vertices[nv];
-        vec3 verticesOut[nv];
+        vec2 uvVertices[nv];
 
         for (int i = 0; i < nv; ++i) {
             float fi = i * 2 * M_PI / nv;
             vertices[i] = toHyperbola({pos.x + 0.06f * cosf(fi), pos.y + 0.06f * sinf(fi)});
-            verticesOut[i] = toHyperbola({pos.x + 0.03f * cosf(fi), pos.y + 0.03f * sinf(fi)});
+            uvVertices[i] = vec2(0.5f + 0.5f * cosf(fi),0.5f + 0.5f * sinf(fi));
         }
 
+        generateTexture(color1, color2);
+
         //Make Nodes vaoCircle/vbo
-        glGenVertexArrays(2, vaoCircle);
-        glBindVertexArray(vaoCircle[0]);
+        gpuProgramNode.Use();
+        glGenVertexArrays(1, &vaoCircle);
+        glBindVertexArray(vaoCircle);
 
         glGenBuffers(2, vboCircle);
 
@@ -118,13 +165,10 @@ public:
         glEnableVertexAttribArray(0);  // AttribArray 0
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
 
-        glBindVertexArray(vaoCircle[1]);
-
         glBindBuffer(GL_ARRAY_BUFFER, vboCircle[1]);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, verticesOut, GL_STATIC_DRAW);// we do not change later
-
-        glEnableVertexAttribArray(0);  // AttribArray 0
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * nv, uvVertices, GL_STATIC_DRAW);// we do not change later
+        glEnableVertexAttribArray(1);  // AttribArray 0
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, NULL);
     }
 
     vec2 get2d() {
@@ -148,12 +192,8 @@ public:
     }
 
     void Draw(mat4 TVPmat) {
-        gpuProgram.setUniform(color[0], "color");
-        glBindVertexArray(vaoCircle[0]);
-        glDrawArrays(GL_TRIANGLE_FAN, 0 , nv);
-
-        gpuProgram.setUniform(color[1], "color");
-        glBindVertexArray(vaoCircle[1]);
+        gpuProgramNode.setUniform(*texture, "textureUnit");
+        glBindVertexArray(vaoCircle);
         glDrawArrays(GL_TRIANGLE_FAN, 0 , nv);
     }
 };
@@ -241,6 +281,7 @@ public:
         generateEdges();
 
         //Make Edge vaoCircle/vbo
+        gpuProgramEdge.Use();
         glGenVertexArrays(1, &vaoEdges);
         glBindVertexArray(vaoEdges);
 
@@ -257,17 +298,20 @@ public:
                             0, 1, 0, 0,
                             0, 0, 1, 0,
                             0, 0, 0, 1};
-        gpuProgram.setUniform(VPTransform, "MVP");
 
         //draw Edges
-        gpuProgram.setUniform(vec3(1,1,0), "color");
+        gpuProgramEdge.Use();
+        gpuProgramEdge.setUniform(VPTransform, "MVP");
+        gpuProgramEdge.setUniform(vec3(1,1,0), "color");
         glLineWidth(2.0f);
         glBindVertexArray(vaoEdges);
         glDrawArrays(GL_LINES, 0 , edges.size() * 2);
 
+        gpuProgramNode.Use();
+        gpuProgramNode.setUniform(VPTransform, "MVP");
         //draw Nodes
-        for (auto i = nodes.begin(); i != nodes.end(); i++)
-            (*i).Draw(VPTransform);
+        for (auto & node : nodes)
+            node.Draw(VPTransform);
     }
 };
 
@@ -279,7 +323,8 @@ void onInitialization() {
     srand(time(0));
 
 	// create program for the GPU
-	gpuProgram.create(vertexSource, fragmentSource, "outColor");
+	gpuProgramNode.create(vertexNode, fragmentNode, "outColor");
+	gpuProgramEdge.create(vertexEdge, fragmentEdge, "outColor");
 
 	graph.Create();
 }
