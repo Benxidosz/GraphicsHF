@@ -34,19 +34,46 @@
 #include "framework.h"
 
 // vertex shader in GLSL: It is a Raw string (C++11) since it contains new line characters
-const char * const vertexNode = R"(
+const char * const vertexSource = R"(
 	#version 330				// Shader 3.3
 	precision highp float;		// normal floats, makes no difference on desktop computers
 
-	uniform mat4 MVP;			// uniform variable, the Model-View-Projection transformation matrix
-	layout(location = 0) in vec3 vp;	// Varying input: vp = vertex position is expected in attrib array 0
+    uniform vec3 from;
+    uniform vec3 to;
+
+	layout(location = 0) in vec3 vp;
     layout(location = 1) in vec2 uv;
 
     out vec2 textCoord;
 
+    float Lorentz(vec3 q, vec3 p) {
+        return dot(q.xy, p.xy) - q.z * p.z;
+    }
+
+    float distance(vec3 p, vec3 q) {
+        return acosh(-Lorentz(q, p));
+    }
+
+    vec3 mirror(vec3 p, vec3 m) {
+        float d = distance(p, m);
+        vec3 v = (m - p * cosh(d));
+        return p * cosh(2.0f * d) + v * 2 * cosh(d);
+    }
+
 	void main() {
+        float d = distance(from, to);
+        vec3 v = (to - from * cosh(d)) / sinh(d);
+        vec3 m1 = from * cosh (d / 4.0f) + v * sinh(d / 4.0f);
+        vec3 m2 = from * cosh ((3.0f * d) / 4.0f) + v * sinh((3.0f * d) / 4.0f);
+
+        vec3 mirroredVp;
+        if (d == 0)
+            mirroredVp = vp;
+        else
+            mirroredVp = mirror(mirror(vp, m1), m2);
+
         textCoord = uv;
-		gl_Position = vec4(vp.x, vp.y, 0, vp.z) * MVP;		// transform vp from modeling space to normalized device space
+		gl_Position = vec4(mirroredVp.x, mirroredVp.y, 0, mirroredVp.z);		// transform vp from modeling space to normalized device space
 	}
 )";
 
@@ -65,19 +92,6 @@ const char * const fragmentNode = R"(
 	}
 )";
 
-// vertex shader in GLSL: It is a Raw string (C++11) since it contains new line characters
-const char * const vertexEdge = R"(
-	#version 330				// Shader 3.3
-	precision highp float;		// normal floats, makes no difference on desktop computers
-
-	uniform mat4 MVP;			// uniform variable, the Model-View-Projection transformation matrix
-	layout(location = 0) in vec3 vp;	// Varying input: vp = vertex position is expected in attrib array 0
-
-	void main() {
-		gl_Position = vec4(vp.x, vp.y, 0, vp.z) * MVP;		// transform vp from modeling space to normalized device space
-	}
-)";
-
 // fragment shader in GLSL
 const char * const fragmentEdge = R"(
 	#version 330			// Shader 3.3
@@ -91,7 +105,12 @@ const char * const fragmentEdge = R"(
 	}
 )";
 
+//Globals:
 GPUProgram gpuProgramNode, gpuProgramEdge;
+int nv = 100;
+vec3 sVert = {0, 0, 0}, eVert = {0, 0, 0};
+
+bool mouseDown = false;
 
 bool operator!=(vec3 a, vec3 b) {
     return (a.x != b.x and a.y != b.y and a.z != b.z);
@@ -111,10 +130,16 @@ vec3 toHyperbola(vec2 pos) {
     return {v.x * sinhf(d), v.y * sinhf(d), coshf(d)};
 }
 
-int nv = 100;
+vec3 invHyper(vec2 pos) {
+    float s = sqrt(1.0f - dot(pos, pos));
+    return vec3(pos.x, pos.y, 1) / s;
+}
+
+
 
 class Node {
     unsigned int vaoCircle{}, vboCircle[2]{};
+    vec3 hPos;
     vec2 pos;
     vec3 color[2];
     Texture * texture;
@@ -125,20 +150,22 @@ class Node {
             for (int j = 0; j < 50; ++j) {
                 float x = (float)i / 50.0f;
                 float y = (float)j / 50.0f;
-                /*if (powf(x - 0.5, 2) + powf(y - 0.5, 2) <= 0.1)
-                    textureVec.emplace_back(vec4(c2.x, c2.y, c2.z, 1));
-                else
-                    textureVec.emplace_back(vec4(c1.x, c1.y, c1.z, 1));*/
+//                if (powf(x - 0.5, 2) + powf(y - 0.5, 2) <= 0.1)
+//                    textureVec.emplace_back(vec4(c2.x, c2.y, c2.z, 1));
+//                else
+//                    textureVec.emplace_back(vec4(c1.x, c1.y, c1.z, 1));
+
                 if (abs(x - 0.5f) < 0.1f or abs(y - 0.5f) < 0.1)
                     textureVec.emplace_back(vec4(c2.x, c2.y, c2.z, 1));
                 else
                     textureVec.emplace_back(vec4(c1.x, c1.y, c1.z, 1));
+
             }
         texture = new Texture(50, 50, textureVec);
     }
 
 public:
-    Node(vec2 pos, vec3 color1, vec3 color2) : pos(pos) {
+    Node(vec2 pos, vec3 color1, vec3 color2) : hPos(toHyperbola(pos)), pos(pos) {
         color[0] = color1;
         color[1] = color2;
         //Generate circle vertexes.
@@ -148,7 +175,7 @@ public:
         for (int i = 0; i < nv; ++i) {
             float fi = i * 2 * M_PI / nv;
             vertices[i] = toHyperbola({pos.x + 0.06f * cosf(fi), pos.y + 0.06f * sinf(fi)});
-            uvVertices[i] = vec2(0.5f + 0.5f * cosf(fi),0.5f + 0.5f * sinf(fi));
+            uvVertices[i] = vec2(0.5f + 0.5f * cosf(fi), 0.5f + 0.5f * sinf(fi));
         }
 
         generateTexture(color1, color2);
@@ -161,22 +188,22 @@ public:
         glGenBuffers(2, vboCircle);
 
         glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, vertices, GL_STATIC_DRAW);// we do not change later
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, vertices, GL_DYNAMIC_DRAW);
         glEnableVertexAttribArray(0);  // AttribArray 0
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
 
         glBindBuffer(GL_ARRAY_BUFFER, vboCircle[1]);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * nv, uvVertices, GL_STATIC_DRAW);// we do not change later
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * nv, uvVertices, GL_DYNAMIC_DRAW);
         glEnableVertexAttribArray(1);  // AttribArray 0
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, NULL);
     }
 
     vec2 get2d() {
-        return {pos.x, pos.y};
+        return pos;
     }
 
     vec3 hyperPos() {
-        return toHyperbola({pos.x, pos.y});
+        return hPos;
     }
 
     bool different(vec3 c1, vec3 c2) {
@@ -187,22 +214,19 @@ public:
         return (length(c1 - color[0]) < avg and length(c2 - color[1]) < avg);
     }
 
-    void print() {
-        printf("x: %f y: %f\n", pos.x, pos.y);
-    }
-
-    void Draw(mat4 TVPmat) {
+    void Draw() {
         gpuProgramNode.setUniform(*texture, "textureUnit");
+        glBindVertexArray(vaoCircle);
         glBindVertexArray(vaoCircle);
         glDrawArrays(GL_TRIANGLE_FAN, 0 , nv);
     }
 };
 
 struct Edge {
-    float x1, y1, w1, x2, y2, w2;
+    vec3 n1, n2;
 
-    Edge(float x1, float y1, float w1, float x2, float y2, float w2)
-    : x1(x1), y1(y1), w1(w1), x2(x2), y2(y2), w2(w2) { }
+    Edge(vec3 n1, vec3 n2)
+    : n1(n1), n2(n2) { }
 };
 
 class Graph {
@@ -262,7 +286,7 @@ class Graph {
                 }
                 if (!has) {
 
-                    edges.emplace_back(Edge(n1Pos.x, n1Pos.y, n1Pos.z, n2Pos.x, n2Pos.y, n2Pos.z));
+                    edges.emplace_back(Edge(n1Pos, n2Pos));
                     pairs.emplace_back(n1, n2);
                 }
             }
@@ -273,9 +297,6 @@ public:
     void Create() {
         //Generate Nodes location.
         generateNodes();
-
-        for (auto & node : nodes)
-            node.print();
 
         //Generate edges.
         generateEdges();
@@ -294,24 +315,31 @@ public:
     }
 
     void Draw() {
-        mat4 VPTransform = {1, 0, 0, 0,
-                            0, 1, 0, 0,
-                            0, 0, 1, 0,
-                            0, 0, 0, 1};
-
         //draw Edges
         gpuProgramEdge.Use();
-        gpuProgramEdge.setUniform(VPTransform, "MVP");
+       if (sVert == vec2(0, 0) || eVert == vec2(0, 0)) {
+            gpuProgramEdge.setUniform(vec3(0, 0, 0), "from");
+            gpuProgramEdge.setUniform(vec3(0, 0, 0), "to");
+       } else {
+            gpuProgramEdge.setUniform(sVert, "from");
+            gpuProgramEdge.setUniform(eVert, "to");
+       }
         gpuProgramEdge.setUniform(vec3(1,1,0), "color");
         glLineWidth(2.0f);
         glBindVertexArray(vaoEdges);
         glDrawArrays(GL_LINES, 0 , edges.size() * 2);
 
         gpuProgramNode.Use();
-        gpuProgramNode.setUniform(VPTransform, "MVP");
+        if (sVert == vec2(0, 0) || eVert == vec2(0, 0)) {
+            gpuProgramNode.setUniform(vec3(0, 0, 0), "from");
+            gpuProgramNode.setUniform(vec3(0, 0, 0), "to");
+        } else {
+            gpuProgramNode.setUniform(sVert, "from");
+            gpuProgramNode.setUniform(eVert, "to");
+        }
         //draw Nodes
         for (auto & node : nodes)
-            node.Draw(VPTransform);
+            node.Draw();
     }
 };
 
@@ -323,8 +351,8 @@ void onInitialization() {
     srand(time(0));
 
 	// create program for the GPU
-	gpuProgramNode.create(vertexNode, fragmentNode, "outColor");
-	gpuProgramEdge.create(vertexEdge, fragmentEdge, "outColor");
+	gpuProgramNode.create(vertexSource, fragmentNode, "outColor");
+	gpuProgramEdge.create(vertexSource, fragmentEdge, "outColor");
 
 	graph.Create();
 }
@@ -350,29 +378,26 @@ void onKeyboardUp(unsigned char key, int pX, int pY) {
 
 // Move mouse with key pressed
 void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the cursor in the coordinate system of the operation system
-	// Convert to normalized device space
-	float cX = 2.0f * pX / windowWidth - 1;	// flip y axis
-	float cY = 1.0f - 2.0f * pY / windowHeight;
-	printf("Mouse moved to (%3.2f, %3.2f)\n", cX, cY);
+    float cX = 2.0f * pX / windowWidth - 1;
+    float cY = 1.0f - 2.0f * pY / windowHeight;
+    if (mouseDown) {
+        eVert = invHyper(vec2(cX, cY));
+	}
+    glutPostRedisplay();
 }
 
 // Mouse click event
 void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel coordinates of the cursor in the coordinate system of the operation system
-	// Convert to normalized device space
-	float cX = 2.0f * pX / windowWidth - 1;	// flip y axis
-	float cY = 1.0f - 2.0f * pY / windowHeight;
-
-	char * buttonStat;
-	switch (state) {
-        case GLUT_DOWN: buttonStat = "pressed"; break;
-        case GLUT_UP:   buttonStat = "released"; break;
+    float cX = 2.0f * pX / windowWidth - 1;
+    float cY = 1.0f - 2.0f * pY / windowHeight;
+    if (button = GLUT_RIGHT_BUTTON and state == GLUT_DOWN) {
+        mouseDown = true;
+        sVert = invHyper(vec2(cX, cY));
+	} else if (button = GLUT_RIGHT_BUTTON and state == GLUT_UP) {
+        mouseDown = false;
+        eVert = invHyper(vec2(cX, cY));
 	}
-
-	switch (button) {
-        case GLUT_LEFT_BUTTON:   printf("Left button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);   break;
-        case GLUT_MIDDLE_BUTTON: printf("Middle button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY); break;
-        case GLUT_RIGHT_BUTTON:  printf("Right button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);  break;
-	}
+    glutPostRedisplay();
 }
 
 // Idle event indicating that some time elapsed: do animation here
