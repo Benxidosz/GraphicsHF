@@ -38,8 +38,9 @@ const char * const vertexSource = R"(
 	#version 330				// Shader 3.3
 	precision highp float;		// normal floats, makes no difference on desktop computers
 
-    uniform vec3 from;
-    uniform vec3 to;
+    uniform vec3 m1;
+    uniform vec3 m2;
+    uniform float d;
 
 	layout(location = 0) in vec3 vp;
     layout(location = 1) in vec2 uv;
@@ -61,13 +62,8 @@ const char * const vertexSource = R"(
     }
 
 	void main() {
-        float d = distance(from, to);
-        vec3 v = (to - from * cosh(d)) / sinh(d);
-        vec3 m1 = from * cosh (d / 4.0f) + v * sinh(d / 4.0f);
-        vec3 m2 = from * cosh ((3.0f * d) / 4.0f) + v * sinh((3.0f * d) / 4.0f);
-
         vec3 mirroredVp;
-        if (d == 0)
+        if (sinh(d) == 0 || d < 0.01)
             mirroredVp = vp;
         else
             mirroredVp = mirror(mirror(vp, m1), m2);
@@ -105,11 +101,6 @@ const char * const fragmentEdge = R"(
 	}
 )";
 
-//Globals:
-GPUProgram gpuProgramNode, gpuProgramEdge;
-int nv = 100;
-vec3 sVert = {0, 0, 0}, eVert = {0, 0, 0};
-
 bool mouseDown = false;
 
 bool operator!=(vec3 a, vec3 b) {
@@ -125,6 +116,8 @@ bool operator==(vec4 a, vec4 b) {
 }
 
 vec3 toHyperbola(vec2 pos) {
+    if (pos == vec2(0, 0))
+        return vec3(0, 0, 1);
     float d = sqrtf(powf(pos.x, 2) + powf(pos.y, 2));
     vec2 v = {pos.x / d, pos.y / d};
     return {v.x * sinhf(d), v.y * sinhf(d), coshf(d)};
@@ -135,6 +128,43 @@ vec3 invHyper(vec2 pos) {
     return vec3(pos.x, pos.y, 1) / s;
 }
 
+float Lorentz(vec3 q, vec3 p) {
+    return dot(vec2(q.x, q.y), vec2(p.x, p.y)) - q.z * p.z;
+}
+
+float distance(vec3 p, vec3 q) {
+    return acosh(-Lorentz(q, p));
+}
+
+vec3 mirror(vec3 p, vec3 m) {
+    float d = distance(p, m);
+    vec3 v = (m - p * coshf(d));  // /sinh(d)
+    return p * coshf(2.0f * d) + v * 2 * coshf(d); //sinh(2d) = 2 * sinh(d) * cosh(d)
+}
+
+int min(int a, int b) {
+    return a < b ? a : b;
+}
+
+vec3 hyperTrans(vec3 hyperPos, vec3 from, vec3 to) {
+    float dTmp = distance(from, to);
+    if (sinhf(dTmp) != 0) {
+        vec3 vTmp = (to - from * coshf(dTmp)) / sinhf(dTmp);
+        vec3 m1Tmp = from * coshf(dTmp / 4.0f) + vTmp * sinh(dTmp / 4.0f);
+        vec3 m2Tmp = from * coshf((3.0f * dTmp) / 4.0f) + vTmp * sinhf((3.0f * dTmp) / 4.0f);
+        return mirror(mirror(hyperPos, m1Tmp), m2Tmp);
+    } else {
+        return hyperPos;
+    }
+}
+
+//Globals:
+GPUProgram gpuProgramNode, gpuProgramEdge;
+int nv = 100;
+vec3 from = {0, 0, -1}, to = {0, 0, -1};
+vec3 m1, m2;
+vec3 v;
+float d;
 
 
 class Node {
@@ -142,10 +172,14 @@ class Node {
     vec3 hPos;
     vec2 pos;
     vec3 color[2];
-    Texture * texture;
+    Texture * texture{};
+    vec3* vertices;
+    vec2* uvVertices;
+    std::vector<Node*> neibours;
 
     void generateTexture(vec3 c1, vec3 c2) {
         std::vector<vec4> textureVec;
+
         for (int i = 0; i < 50; ++i)
             for (int j = 0; j < 50; ++j) {
                 float x = (float)i / 50.0f;
@@ -168,15 +202,20 @@ public:
     Node(vec2 pos, vec3 color1, vec3 color2) : hPos(toHyperbola(pos)), pos(pos) {
         color[0] = color1;
         color[1] = color2;
-        //Generate circle vertexes.
-        vec3 vertices[nv];
-        vec2 uvVertices[nv];
+
+        vertices = new vec3[nv];
+        uvVertices = new vec2[nv];
 
         for (int i = 0; i < nv; ++i) {
             float fi = i * 2 * M_PI / nv;
-            vertices[i] = toHyperbola({pos.x + 0.06f * cosf(fi), pos.y + 0.06f * sinf(fi)});
+            vertices[i] = toHyperbola(vec2(0.045f * cosf(fi), 0.045f * sinf(fi)));
             uvVertices[i] = vec2(0.5f + 0.5f * cosf(fi), 0.5f + 0.5f * sinf(fi));
         }
+
+        vec3 nullPoint = vec3(0, 0, 1);
+
+        for (int i = 0; i < nv; ++i)
+            vertices[i] = hyperTrans(vertices[i], nullPoint, hPos);
 
         generateTexture(color1, color2);
 
@@ -186,13 +225,14 @@ public:
         glBindVertexArray(vaoCircle);
 
         glGenBuffers(2, vboCircle);
-
         glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
+
         glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, vertices, GL_DYNAMIC_DRAW);
         glEnableVertexAttribArray(0);  // AttribArray 0
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
 
         glBindBuffer(GL_ARRAY_BUFFER, vboCircle[1]);
+
         glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * nv, uvVertices, GL_DYNAMIC_DRAW);
         glEnableVertexAttribArray(1);  // AttribArray 0
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, NULL);
@@ -206,6 +246,26 @@ public:
         return hPos;
     }
 
+    void setPostByEuk(vec2 pos) {
+        this->pos = pos;
+        this->hPos = toHyperbola(pos);
+
+        for (int i = 0; i < nv; ++i) {
+            float fi = i * 2 * M_PI / nv;
+            vertices[i] = toHyperbola({0.045f * cosf(fi), 0.045f * sinf(fi)});
+        }
+
+        vec3 nullPoint = vec3(0, 0, 1);
+        for (int i = 0; i < nv; ++i)
+            vertices[i] = hyperTrans(vertices[i], nullPoint, hPos);
+
+        gpuProgramNode.Use();
+        glBindVertexArray(vaoCircle);
+
+        glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, vertices, GL_DYNAMIC_DRAW);
+    }
+
     bool different(vec3 c1, vec3 c2) {
         return color[0] != c1 || color[0] != c2 || color[1] != c1 || color[1] != c2;
     }
@@ -214,36 +274,114 @@ public:
         return (length(c1 - color[0]) < avg and length(c2 - color[1]) < avg);
     }
 
+    int getDiv() {
+        return neibours.size();
+    }
+
+    void applyTrans() {
+        if (sinh(d) != 0 and d > 0.01) {
+            hPos = mirror(mirror(hPos, m1), m2);
+
+            for (int i = 0; i < nv; ++i) {
+                float fi = i * 2 * M_PI / nv;
+                vertices[i] = toHyperbola({0.045f * cosf(fi), 0.045f * sinf(fi)});
+            }
+
+            vec3 nullPoint = vec3(0, 0, 1);
+            for (int i = 0; i < nv; ++i)
+                vertices[i] = hyperTrans(vertices[i], nullPoint, hPos);
+
+            glBindVertexArray(vaoCircle);
+
+            glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, vertices, GL_DYNAMIC_DRAW);
+        }
+    }
+
     void Draw() {
         gpuProgramNode.setUniform(*texture, "textureUnit");
         glBindVertexArray(vaoCircle);
-        glBindVertexArray(vaoCircle);
         glDrawArrays(GL_TRIANGLE_FAN, 0 , nv);
+    }
+
+    void addNei(Node* node) {
+        bool contains = false;
+        for (Node * nei : neibours)
+            if (node == nei) {
+                contains = true;
+                break;
+            }
+        if (!contains)
+            neibours.emplace_back(node);
+    }
+
+    void setHPos(const vec3 &hPos) {
+        Node::hPos = hPos;
     }
 };
 
-struct Edge {
-    vec3 n1, n2;
+class Edge {
+    Node * n1;
+    Node * n2;
+    unsigned int vao, vbo;
+    vec3 points[2];
 
-    Edge(vec3 n1, vec3 n2)
-    : n1(n1), n2(n2) { }
+public:
+
+    Edge(Node * n1, Node * n2)
+            : n1(n1), n2(n2) {
+        //Make Nodes vaoCircle/vbo
+        points[0] = n1->hyperPos();
+        points[1] = n2->hyperPos();
+
+        //Make Nodes vaoCircle/vbo
+        gpuProgramEdge.Use();
+
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        glGenBuffers(1, &vbo);
+        glEnableVertexAttribArray(0);  // AttribArray 0
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
+
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * 2, points, GL_DYNAMIC_DRAW);
+    }
+
+    void refresh() {
+        points[0] = n1->hyperPos();
+        points[1] = n2->hyperPos();
+
+        //Make Nodes vaoCircle/vbo
+        gpuProgramEdge.Use();
+
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * 2, points, GL_DYNAMIC_DRAW);
+    }
+
+    void draw() {
+        glBindVertexArray(vao);
+        glDrawArrays(GL_LINES, 0 , 2);
+    }
+
+    void applyTrans() {
+        refresh();
+    }
 };
 
 class Graph {
-    unsigned int vaoEdges, vboEdges;
-    std::vector<Node> nodes;
-    std::vector<Edge> edges;
+    std::vector<Node*> nodes;
+    std::vector<Edge*> edges;
 
     void generateNodes() {
         while (nodes.size() < 50) {
-            float randX = ((float)(rand() % 300 - 150) / 100.0f);
-            float randY = ((float)(rand() % 300 - 150) / 100.0f);
+            float randX = ((float)(rand() % 200 - 100) / 100.0f);
+            float randY = ((float)(rand() % 200 - 100) / 100.0f);
 
             bool near = false;
 
-            for (auto & node : nodes) {
-                vec2 tmp = node.get2d();
-                if (length(vec2(randX, randY) - tmp) < 0.15) {
+            for (auto node : nodes) {
+                vec2 tmp = node->get2d();
+                if (length(vec2(randX, randY) - tmp) < 0.1) {
                     near = true;
                     continue;
                 }
@@ -257,37 +395,38 @@ class Graph {
                                    (float) (rand() % 80) / 100.0f + 0.2);
                 color2 = vec3((float) (rand() % 80) / 100.0f + 0.2, (float) (rand() % 80) / 100.0f + 0.2,
                                    (float) (rand() % 80) / 100.0f + 0.2);
-                for (auto & node : nodes) {
-                    if (!node.different(color1, color2) or node.different(color1, color2, 0.3))
+                for (auto node : nodes) {
+                    if (!node->different(color1, color2) or node->different(color1, color2, 0.3))
                         identical = true;
                 }
             }
             if (!near and color1 != color2 and length(color2 - color1) > 0.9)
-                nodes.emplace_back(Node({randX, randY}, color1, color2));
+                nodes.push_back(new Node(vec2(randX, randY), color1, color2));
         }
     }
 
+    //TODO: Fix one Edge generate to the right upper corner!
     void generateEdges() {
         int maxEdgenum = (50 * 49) / 2;
         std::vector<vec2> pairs;
-        while ((float)edges.size() / (float)maxEdgenum < 0.05) {
+        while (edges.size() < 62) {
             int n1 = rand() % 50;
             int n2 = rand() % 50;
 
-            vec3 n1Pos = nodes[n1].hyperPos();
-            vec3 n2Pos = nodes[n2].hyperPos();
+            printf("%d %d\n", n1, n2);
 
             if (n1 != n2) {
                 bool has = false;
-                for (auto tmp : pairs) {
+                for (auto & tmp : pairs) {
                     if (tmp == vec2(n1, n2) || tmp == vec2(n2, n1)) {
                         has = true;
                     }
                 }
                 if (!has) {
-
-                    edges.emplace_back(Edge(n1Pos, n2Pos));
+                    edges.push_back(new Edge(nodes[n1], nodes[n2]));
                     pairs.emplace_back(n1, n2);
+                    nodes[n1]->addNei(nodes[n2]);
+                    nodes[n2]->addNei(nodes[n1]);
                 }
             }
         }
@@ -300,46 +439,82 @@ public:
 
         //Generate edges.
         generateEdges();
+    }
 
-        //Make Edge vaoCircle/vbo
+    void applyTrans() {
+        gpuProgramNode.Use();
+        for (Node * node : nodes)
+            node->applyTrans();
+
         gpuProgramEdge.Use();
-        glGenVertexArrays(1, &vaoEdges);
-        glBindVertexArray(vaoEdges);
-
-        glGenBuffers(1, &vboEdges);
-        glBindBuffer(GL_ARRAY_BUFFER, vboEdges);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(Edge) * edges.size(), &edges[0], GL_STATIC_DRAW);// we do not change later
-
-        glEnableVertexAttribArray(0);  // AttribArray 0
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
+        for (Edge * edge : edges)
+            edge->applyTrans();
     }
 
     void Draw() {
         //draw Edges
         gpuProgramEdge.Use();
-       if (sVert == vec2(0, 0) || eVert == vec2(0, 0)) {
-            gpuProgramEdge.setUniform(vec3(0, 0, 0), "from");
-            gpuProgramEdge.setUniform(vec3(0, 0, 0), "to");
+       if (from == vec2(0, 0) || to == vec2(0, 0)) {
+            gpuProgramEdge.setUniform(vec3(0, 0, 0), "m1");
+            gpuProgramEdge.setUniform(vec3(0, 0, 0), "m2");
        } else {
-            gpuProgramEdge.setUniform(sVert, "from");
-            gpuProgramEdge.setUniform(eVert, "to");
+            gpuProgramEdge.setUniform(m1, "m1");
+            gpuProgramEdge.setUniform(m2, "m2");
        }
+        gpuProgramEdge.setUniform(d, "d");
         gpuProgramEdge.setUniform(vec3(1,1,0), "color");
         glLineWidth(2.0f);
-        glBindVertexArray(vaoEdges);
-        glDrawArrays(GL_LINES, 0 , edges.size() * 2);
+
+        for (Edge * edge : edges)
+            edge->draw();
 
         gpuProgramNode.Use();
-        if (sVert == vec2(0, 0) || eVert == vec2(0, 0)) {
-            gpuProgramNode.setUniform(vec3(0, 0, 0), "from");
-            gpuProgramNode.setUniform(vec3(0, 0, 0), "to");
+        if (from == vec2(0, 0) || to == vec2(0, 0)) {
+            gpuProgramNode.setUniform(vec3(0, 0, 0), "m1");
+            gpuProgramNode.setUniform(vec3(0, 0, 0), "m2");
         } else {
-            gpuProgramNode.setUniform(sVert, "from");
-            gpuProgramNode.setUniform(eVert, "to");
+            gpuProgramNode.setUniform(m1, "m1");
+            gpuProgramNode.setUniform(m2, "m2");
         }
+        gpuProgramNode.setUniform(d, "d");
         //draw Nodes
-        for (auto & node : nodes)
-            node.Draw();
+        for (Node * node : nodes)
+            node->Draw();
+    }
+    
+    void heuristic() {
+        //sort nodes by div
+        for (int i = 0; i < nodes.size(); ++i)
+            for (int j = i; j < nodes.size();++j)
+                if (nodes[i]->getDiv() < nodes[j]->getDiv())
+                    std::swap(nodes[i], nodes[j]);
+
+        //init vars
+        int diffLayers = 5;
+        int nodeNumInLayer = 5;
+        int processedNodes = 0;
+        float rDiff = 0.3f;
+        float layerR = rDiff;
+
+        //place the center Node
+        nodes[processedNodes++]->setPostByEuk(vec2(0, 0));
+
+        //place the others on layers.
+        while (processedNodes < 50) {
+            int tmpNum = min(nodeNumInLayer, 50 - processedNodes);
+
+            for (int i = 0; i < tmpNum; ++i) {
+                float phi = (i * 2.0f * M_PI) / tmpNum;
+                nodes[processedNodes++]->setPostByEuk(vec2(layerR * cosf(phi), layerR * sinf(phi)));
+            }
+
+            nodeNumInLayer += diffLayers;
+            layerR += rDiff;
+        }
+
+        //refresh edges
+        for (Edge * edge : edges)
+            edge->refresh();
     }
 };
 
@@ -348,7 +523,6 @@ Graph graph;
 // Initialization, create an OpenGL context
 void onInitialization() {
 	glViewport(0, 0, windowWidth, windowHeight);
-    srand(time(0));
 
 	// create program for the GPU
 	gpuProgramNode.create(vertexSource, fragmentNode, "outColor");
@@ -369,11 +543,16 @@ void onDisplay() {
 
 // Key of ASCII code pressed
 void onKeyboard(unsigned char key, int pX, int pY) {
+    if (key == ' ') {
+        graph.heuristic();
+    }
+
 	glutPostRedisplay();
 }
 
 // Key of ASCII code released
 void onKeyboardUp(unsigned char key, int pX, int pY) {
+    glutPostRedisplay();
 }
 
 // Move mouse with key pressed
@@ -381,7 +560,12 @@ void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the 
     float cX = 2.0f * pX / windowWidth - 1;
     float cY = 1.0f - 2.0f * pY / windowHeight;
     if (mouseDown) {
-        eVert = invHyper(vec2(cX, cY));
+        to = invHyper(vec2(cX, cY));
+        //m1 and m2 calc
+        d = distance(from, to);
+        v = (to - from * coshf(d)) / sinhf(d);
+        m1 = from * coshf(d / 4.0f) + v * sinhf(d / 4.0f);
+        m2 = from * coshf((3.0f * d) / 4.0f) + v * sinhf((3.0f * d) / 4.0f);
 	}
     glutPostRedisplay();
 }
@@ -390,13 +574,19 @@ void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the 
 void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel coordinates of the cursor in the coordinate system of the operation system
     float cX = 2.0f * pX / windowWidth - 1;
     float cY = 1.0f - 2.0f * pY / windowHeight;
-    if (button = GLUT_RIGHT_BUTTON and state == GLUT_DOWN) {
+    if (button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN) {
         mouseDown = true;
-        sVert = invHyper(vec2(cX, cY));
-	} else if (button = GLUT_RIGHT_BUTTON and state == GLUT_UP) {
+        from = invHyper(vec2(cX, cY));
+        to = invHyper(vec2(cX, cY));
+	} else if (button == GLUT_RIGHT_BUTTON and state == GLUT_UP) {
         mouseDown = false;
-        eVert = invHyper(vec2(cX, cY));
-	}
+        to = invHyper(vec2(cX, cY));
+        graph.applyTrans();
+        d = 0;
+	} else {
+        d = 0;
+    }
+
     glutPostRedisplay();
 }
 
