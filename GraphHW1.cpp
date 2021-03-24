@@ -104,15 +104,15 @@ const char * const fragmentEdge = R"(
 bool mouseDown = false;
 
 bool operator!=(vec3 a, vec3 b) {
-    return (a.x != b.x and a.y != b.y and a.z != b.z);
+    return (a.x != b.x && a.y != b.y && a.z != b.z);
 }
 
 bool operator==(vec3 a, vec3 b) {
-    return (a.x == b.x and a.y == b.y and a.z == b.z);
+    return (a.x == b.x && a.y == b.y && a.z == b.z);
 }
 
 bool operator==(vec4 a, vec4 b) {
-    return (a.x == b.x and a.y == b.y and a.z == b.z and a.w == b.w);
+    return (a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w);
 }
 
 vec3 toHyperbola(vec2 pos) {
@@ -140,10 +140,6 @@ vec3 mirror(vec3 p, vec3 m) {
     float d = distance(p, m);
     vec3 v = (m - p * coshf(d));  // /sinh(d)
     return p * coshf(2.0f * d) + v * 2 * coshf(d); //sinh(2d) = 2 * sinh(d) * cosh(d)
-}
-
-int min(int a, int b) {
-    return a < b ? a : b;
 }
 
 vec3 hyperTrans(vec3 hyperPos, vec3 from, vec3 to) {
@@ -184,15 +180,15 @@ class Node {
             for (int j = 0; j < 50; ++j) {
                 float x = (float)i / 50.0f;
                 float y = (float)j / 50.0f;
-//                if (powf(x - 0.5, 2) + powf(y - 0.5, 2) <= 0.1)
-//                    textureVec.emplace_back(vec4(c2.x, c2.y, c2.z, 1));
-//                else
-//                    textureVec.emplace_back(vec4(c1.x, c1.y, c1.z, 1));
-
-                if (abs(x - 0.5f) < 0.1f or abs(y - 0.5f) < 0.1)
+                if (powf(x - 0.5, 2) + powf(y - 0.5, 2) <= 0.1)
                     textureVec.emplace_back(vec4(c2.x, c2.y, c2.z, 1));
                 else
                     textureVec.emplace_back(vec4(c1.x, c1.y, c1.z, 1));
+
+                /*if (abs(x - 0.5f) < 0.1f or abs(y - 0.5f) < 0.1)
+                    textureVec.emplace_back(vec4(c2.x, c2.y, c2.z, 1));
+                else
+                    textureVec.emplace_back(vec4(c1.x, c1.y, c1.z, 1));*/
 
             }
         texture = new Texture(50, 50, textureVec);
@@ -249,21 +245,10 @@ public:
     void setPostByEuk(vec2 pos) {
         this->pos = pos;
         this->hPos = toHyperbola(pos);
+    }
 
-        for (int i = 0; i < nv; ++i) {
-            float fi = i * 2 * M_PI / nv;
-            vertices[i] = toHyperbola({0.045f * cosf(fi), 0.045f * sinf(fi)});
-        }
-
-        vec3 nullPoint = vec3(0, 0, 1);
-        for (int i = 0; i < nv; ++i)
-            vertices[i] = hyperTrans(vertices[i], nullPoint, hPos);
-
-        gpuProgramNode.Use();
-        glBindVertexArray(vaoCircle);
-
-        glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, vertices, GL_DYNAMIC_DRAW);
+    void setHyper(vec3 pos) {
+        hPos = pos;
     }
 
     bool different(vec3 c1, vec3 c2) {
@@ -271,7 +256,7 @@ public:
     }
 
     bool different(vec3 c1, vec3 c2, float avg) {
-        return (length(c1 - color[0]) < avg and length(c2 - color[1]) < avg);
+        return (length(c1 - color[0]) < avg && length(c2 - color[1]) < avg);
     }
 
     int getDiv() {
@@ -312,13 +297,49 @@ public:
                 break;
             }
         if (!contains)
-            neibours.emplace_back(node);
+            neibours.push_back(node);
     }
 
-    void setHPos(const vec3 &hPos) {
-        Node::hPos = hPos;
+    float avgDisFromNeis() {
+        if (!neibours.empty()) {
+            float sumDis = 0;
+            for (auto node : neibours) {
+                sumDis += distance(hyperPos(), node->hyperPos());
+            }
+            return sumDis / (float) neibours.size();
+        } else {
+            return 0;
+        }
+    }
+
+    void refresh() {
+        for (int i = 0; i < nv; ++i) {
+            float fi = i * 2 * M_PI / nv;
+            vertices[i] = toHyperbola({0.045f * cosf(fi), 0.045f * sinf(fi)});
+        }
+
+        vec3 nullPoint = vec3(0, 0, 1);
+        for (int i = 0; i < nv; ++i)
+            vertices[i] = hyperTrans(vertices[i], nullPoint, hPos);
+
+        gpuProgramNode.Use();
+        glBindVertexArray(vaoCircle);
+
+        glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, vertices, GL_DYNAMIC_DRAW);
+    }
+
+    ~Node() {
+        delete[] vertices;
+        delete[] uvVertices;
     }
 };
+
+void swapPos(Node* n1, Node* n2) {
+    vec3 tmp = n1->hyperPos();
+    n1->setHyper(n2->hyperPos());
+    n2->setHyper(tmp);
+}
 
 class Edge {
     Node * n1;
@@ -377,12 +398,12 @@ class Graph {
             float randX = ((float)(rand() % 200 - 100) / 100.0f);
             float randY = ((float)(rand() % 200 - 100) / 100.0f);
 
-            bool near = false;
+            bool isNear = false;
 
             for (auto node : nodes) {
                 vec2 tmp = node->get2d();
                 if (length(vec2(randX, randY) - tmp) < 0.1) {
-                    near = true;
+                    isNear = true;
                     continue;
                 }
             }
@@ -396,30 +417,28 @@ class Graph {
                 color2 = vec3((float) (rand() % 80) / 100.0f + 0.2, (float) (rand() % 80) / 100.0f + 0.2,
                                    (float) (rand() % 80) / 100.0f + 0.2);
                 for (auto node : nodes) {
-                    if (!node->different(color1, color2) or node->different(color1, color2, 0.3))
+                    if (!node->different(color1, color2) || node->different(color1, color2, 0.3))
                         identical = true;
                 }
             }
-            if (!near and color1 != color2 and length(color2 - color1) > 0.9)
+            if (!isNear && color1 != color2 && length(color2 - color1) > 0.9)
                 nodes.push_back(new Node(vec2(randX, randY), color1, color2));
         }
     }
 
-    //TODO: Fix one Edge generate to the right upper corner!
     void generateEdges() {
         int maxEdgenum = (50 * 49) / 2;
         std::vector<vec2> pairs;
-        while (edges.size() < 62) {
+        while (edges.size() < 63) {
             int n1 = rand() % 50;
             int n2 = rand() % 50;
-
-            printf("%d %d\n", n1, n2);
 
             if (n1 != n2) {
                 bool has = false;
                 for (auto & tmp : pairs) {
                     if (tmp == vec2(n1, n2) || tmp == vec2(n2, n1)) {
                         has = true;
+                        break;
                     }
                 }
                 if (!has) {
@@ -430,6 +449,14 @@ class Graph {
                 }
             }
         }
+    }
+
+    float pointGraphByAvgNei() {
+        float sumAvgDis = 0;
+        for (auto node : nodes) {
+            sumAvgDis += node->avgDisFromNeis();
+        }
+        return sumAvgDis / (float)nodes.size();
     }
 
 public:
@@ -465,8 +492,13 @@ public:
         gpuProgramEdge.setUniform(vec3(1,1,0), "color");
         glLineWidth(2.0f);
 
-        for (Edge * edge : edges)
-            edge->draw();
+        std::size_t i = 0;
+        for (Edge * edge : edges) {
+            if (i != 0) {
+                edge->draw();
+            }
+            ++i;
+        }
 
         gpuProgramNode.Use();
         if (from == vec2(0, 0) || to == vec2(0, 0)) {
@@ -490,27 +522,67 @@ public:
                     std::swap(nodes[i], nodes[j]);
 
         //init vars
-        int diffLayers = 5;
-        int nodeNumInLayer = 5;
+        int diffLayers = 2;
+        int nodeInLayer = 10;
         int processedNodes = 0;
-        float rDiff = 0.3f;
+        float rDiff = 0.4f;
         float layerR = rDiff;
 
         //place the center Node
-        nodes[processedNodes++]->setPostByEuk(vec2(0, 0));
+        //nodes[processedNodes++]->setPostByEuk(vec2(0, 0));
 
         //place the others on layers.
         while (processedNodes < 50) {
-            int tmpNum = min(nodeNumInLayer, 50 - processedNodes);
+            int tmpNum = std::min(nodeInLayer, 50 - processedNodes);
 
             for (int i = 0; i < tmpNum; ++i) {
                 float phi = (i * 2.0f * M_PI) / tmpNum;
                 nodes[processedNodes++]->setPostByEuk(vec2(layerR * cosf(phi), layerR * sinf(phi)));
             }
 
-            nodeNumInLayer += diffLayers;
+            nodeInLayer *= diffLayers;
             layerR += rDiff;
         }
+
+        //correct nodes
+        float tmpPoint = 0;
+        while (tmpPoint != pointGraphByAvgNei()) {
+            tmpPoint = pointGraphByAvgNei();
+            int corrected = 0;
+            int layer = 0;
+            while (corrected < 50) {
+                int tmpNodeInLayer = nodeInLayer + pow(diffLayers, layer);
+                for (int i = corrected; i < 50; ++i) {
+                    float bestDisDelta = 0;
+                    int best = 0;
+                    for (int j = i + 1; j < 50; ++j) {
+                        float disAvgI = nodes[i]->avgDisFromNeis();
+                        float disAvgJ = nodes[j]->avgDisFromNeis();
+
+                        swapPos(nodes[i], nodes[j]);
+
+                        float tmpDisAvgI = nodes[i]->avgDisFromNeis();
+                        float tmpDisAvgJ = nodes[j]->avgDisFromNeis();
+
+                        float disDelta = (tmpDisAvgI - disAvgI) + (tmpDisAvgJ - disAvgJ);
+                        if (disDelta < bestDisDelta) {
+                            bestDisDelta = disDelta;
+                            best = j;
+                        }
+
+                        swapPos(nodes[i], nodes[j]);
+                    }
+                    if (bestDisDelta < 0)
+                        swapPos(nodes[i], nodes[best]);
+
+                    ++corrected;
+                }
+            }
+        }
+
+        //refresh nodes
+        for (Node * node : nodes)
+            node->refresh();
 
         //refresh edges
         for (Edge * edge : edges)
@@ -523,6 +595,9 @@ Graph graph;
 // Initialization, create an OpenGL context
 void onInitialization() {
 	glViewport(0, 0, windowWidth, windowHeight);
+
+    //TODO:remode it
+    //srand(time(0));
 
 	// create program for the GPU
 	gpuProgramNode.create(vertexSource, fragmentNode, "outColor");
@@ -574,11 +649,11 @@ void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the 
 void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel coordinates of the cursor in the coordinate system of the operation system
     float cX = 2.0f * pX / windowWidth - 1;
     float cY = 1.0f - 2.0f * pY / windowHeight;
-    if (button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN) {
+    if (button == GLUT_RIGHT_BUTTON && state == GLUT_DOWN) {
         mouseDown = true;
         from = invHyper(vec2(cX, cY));
         to = invHyper(vec2(cX, cY));
-	} else if (button == GLUT_RIGHT_BUTTON and state == GLUT_UP) {
+	} else if (button == GLUT_RIGHT_BUTTON && state == GLUT_UP) {
         mouseDown = false;
         to = invHyper(vec2(cX, cY));
         graph.applyTrans();
