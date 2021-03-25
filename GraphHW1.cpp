@@ -171,11 +171,11 @@ bool sortStarted = false;
 float startedSec;
 
 //parameters:
-float prefDist = 0.2f;
-float fParam = 5.0f;
-float hParam = 1.25;
+float prefDist = 0.25f;
+float fParam = 40.0f;
+float hParam = 1.25f;
 float nodeMass = 1.0f;
-float q = 20.0;
+float q = 30.0;
 
 class Node {
     unsigned int vaoCircle{}, vboCircle[2]{};
@@ -210,14 +210,17 @@ class Node {
     }
 
     float f(float dis) {
+        if (dis < prefDist - 0.1)
+            return -100.85;
         return fParam * powf(dis - prefDist, 3);
+        //return fParam * sinhf(dis - prefDist);
     }
 
     float h(float dis) {
-        if (dis < 0.001)
-            dis += 0.01;
+        if (dis < 0.1)
+            return -100.85;
 
-        return - (1 / (hParam * dis));
+        return - hParam * (1 / (dis));
         //return dis < 3.0f ? - (1 / powf(M_E, hParam * dis - prefDist)) : 0;
     }
 
@@ -375,14 +378,11 @@ public:
         return ret;
     }
 
-    vec3 force(vec3 v) {
-        bool nei = false;
-
-        float dis = distance(v,hPos);
-
-        vec3 ret = normalize(v - hPos * coshf(dis) / sinhf(dis));
-
-        return ret;
+    vec3 G() {
+        vec3 nullPoint(0,0,1);
+        float dis = distance(nullPoint, hPos);
+        vec3 ret = normalize(nullPoint - hPos * coshf(dis) / sinhf(dis));
+        return dis * dis * dis * q * ret;
     }
 
     vec3& getV() {
@@ -665,9 +665,10 @@ public:
                 if (node != other)
                     forceSum = forceSum + node->force(other);
 
-            forceSum = forceSum + q * node->force(vec3(0, 0, 1));
+            forceSum = forceSum + node->G();
 
-            vTmp = vi * 0.03 + (forceSum * deltaTime / nodeMass);
+            vTmp = vi * 0.01 + (forceSum * deltaTime / nodeMass);
+
             if (vTmp != 0) {
                 node->setHyper(hyperTrans(ri, vTmp));
 
@@ -713,12 +714,15 @@ void onDisplay() {
 	glutSwapBuffers(); // exchange buffers for double buffering
 }
 
+long counter = 0;
+
 // Key of ASCII code pressed
 void onKeyboard(unsigned char key, int pX, int pY) {
     if (key == ' ') {
         graph.heuristic();
         sortStarted = true;
         startedSec = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
+        counter = 0;
     }
 
 	glutPostRedisplay();
@@ -768,10 +772,14 @@ void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel co
 void onIdle() {
 	long time = glutGet(GLUT_ELAPSED_TIME);
 	if (sortStarted) {
-	    for (int i = 0; i < 1000; ++i)
+	    for (int i = 0; i < 100; ++i) {
             graph.stepSort(0.001);
+            ++counter;
+        }
 
-	    sortStarted = false;
+	    if (counter > 1000) {
+            sortStarted = false;
+        }
     }
     glutPostRedisplay();
 }
