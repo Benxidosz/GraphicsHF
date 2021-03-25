@@ -154,6 +154,12 @@ vec3 hyperTrans(vec3 hyperPos, vec3 from, vec3 to) {
     }
 }
 
+vec3 hyperTrans(vec3 hyperPos, vec3 v) {
+    float dTmp = length(v);
+    vec3 vTmp = normalize(v);
+    return hyperPos * coshf(dTmp) + vTmp * sinhf(dTmp);
+}
+
 //Globals:
 GPUProgram gpuProgramNode, gpuProgramEdge;
 int nv = 100;
@@ -161,7 +167,15 @@ vec3 from = {0, 0, -1}, to = {0, 0, -1};
 vec3 m1, m2;
 vec3 v;
 float d;
+bool sortStarted = false;
+float startedSec;
 
+//parameters:
+float prefDist = 0.2f;
+float fParam = 5.0f;
+float hParam = 1.25;
+float nodeMass = 1.0f;
+float q = 20.0;
 
 class Node {
     unsigned int vaoCircle{}, vboCircle[2]{};
@@ -172,6 +186,7 @@ class Node {
     vec3* vertices;
     vec2* uvVertices;
     std::vector<Node*> neibours;
+    vec3 vi;
 
     void generateTexture(vec3 c1, vec3 c2) {
         std::vector<vec4> textureVec;
@@ -194,8 +209,20 @@ class Node {
         texture = new Texture(50, 50, textureVec);
     }
 
+    float f(float dis) {
+        return fParam * powf(dis - prefDist, 3);
+    }
+
+    float h(float dis) {
+        if (dis < 0.001)
+            dis += 0.01;
+
+        return - (1 / (hParam * dis));
+        //return dis < 3.0f ? - (1 / powf(M_E, hParam * dis - prefDist)) : 0;
+    }
+
 public:
-    Node(vec2 pos, vec3 color1, vec3 color2) : hPos(toHyperbola(pos)), pos(pos) {
+    Node(vec2 pos, vec3 color1, vec3 color2) : hPos(toHyperbola(pos)), pos(pos), vi(0, 0, 0) {
         color[0] = color1;
         color[1] = color2;
 
@@ -249,6 +276,7 @@ public:
 
     void setHyper(vec3 pos) {
         hPos = pos;
+        hPos.z = sqrtf(1 + hPos.x * hPos.x + hPos.y * hPos.y);
     }
 
     bool different(vec3 c1, vec3 c2) {
@@ -327,6 +355,42 @@ public:
 
         glBindBuffer(GL_ARRAY_BUFFER, vboCircle[0]);
         glBufferData(GL_ARRAY_BUFFER, sizeof(vec3) * nv, vertices, GL_DYNAMIC_DRAW);
+    }
+
+    vec3 force(Node* node) {
+        bool nei = false;
+        for (Node* neiNode : neibours) {
+            if (neiNode == node) {
+                nei = true;
+                break;
+            }
+        }
+
+        float dis = distance(node->hyperPos(),hPos);
+
+        vec3 ret = normalize(node->hyperPos() - hPos * coshf(dis) / sinhf(dis));
+
+        ret = ret * (nei ? f(dis) : h(dis));
+
+        return ret;
+    }
+
+    vec3 force(vec3 v) {
+        bool nei = false;
+
+        float dis = distance(v,hPos);
+
+        vec3 ret = normalize(v - hPos * coshf(dis) / sinhf(dis));
+
+        return ret;
+    }
+
+    vec3& getV() {
+        return vi;
+    }
+
+    void setV(vec3 v) {
+        vi = v;
     }
 
     ~Node() {
@@ -588,6 +652,42 @@ public:
         for (Edge * edge : edges)
             edge->refresh();
     }
+
+    void stepSort(float deltaTime) {
+
+        for (Node* node : nodes) {
+            vec3 forceSum(0,0,0);
+            vec3 vi = node->getV();
+            vec3 vTmp;
+            vec3 ri = node->hyperPos();
+
+            for (Node* other : nodes)
+                if (node != other)
+                    forceSum = forceSum + node->force(other);
+
+            forceSum = forceSum + q * node->force(vec3(0, 0, 1));
+
+            vTmp = vi * 0.03 + (forceSum * deltaTime / nodeMass);
+            if (vTmp != 0) {
+                node->setHyper(hyperTrans(ri, vTmp));
+
+                float dis = length(vTmp * deltaTime);
+                vTmp = length(vTmp) * (normalize(vTmp) * coshf(dis) + ri * sinhf(dis));
+
+                node->setV(vTmp);
+            } else
+                node->setV(vec3(0, 0, 0));
+        }
+
+
+        //refresh nodes
+        for (Node * node : nodes)
+            node->refresh();
+
+        //refresh edges
+        for (Edge * edge : edges)
+            edge->refresh();
+    }
 };
 
 Graph graph;
@@ -595,9 +695,6 @@ Graph graph;
 // Initialization, create an OpenGL context
 void onInitialization() {
 	glViewport(0, 0, windowWidth, windowHeight);
-
-    //TODO:remode it
-    //srand(time(0));
 
 	// create program for the GPU
 	gpuProgramNode.create(vertexSource, fragmentNode, "outColor");
@@ -620,6 +717,8 @@ void onDisplay() {
 void onKeyboard(unsigned char key, int pX, int pY) {
     if (key == ' ') {
         graph.heuristic();
+        sortStarted = true;
+        startedSec = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
     }
 
 	glutPostRedisplay();
@@ -667,5 +766,12 @@ void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel co
 
 // Idle event indicating that some time elapsed: do animation here
 void onIdle() {
-	long time = glutGet(GLUT_ELAPSED_TIME); // elapsed time since the start of the program
+	long time = glutGet(GLUT_ELAPSED_TIME);
+	if (sortStarted) {
+	    for (int i = 0; i < 1000; ++i)
+            graph.stepSort(0.001);
+
+	    sortStarted = false;
+    }
+    glutPostRedisplay();
 }
