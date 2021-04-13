@@ -1,5 +1,5 @@
 //=============================================================================================
-// Mintaprogram: Zöld háromszög. Ervenyes 2019. osztol.
+// Mintaprogram: ZÃ¶ld hÃ¡romszÃ¡g. Ervenyes 2019. osztol.
 //
 // A beadott program csak ebben a fajlban lehet, a fajl 1 byte-os ASCII karaktereket tartalmazhat, BOM kihuzando.
 // Tilos:
@@ -18,7 +18,7 @@
 //
 // NYILATKOZAT
 // ---------------------------------------------------------------------------------------------
-// Nev    : Szabó Bence Sándor
+// Nev    : SzabÃ³ Bence SÃ¡ndor
 // Neptun : NQB6UO
 // ---------------------------------------------------------------------------------------------
 // ezennel kijelentem, hogy a feladatot magam keszitettem, es ha barmilyen segitseget igenybe vettem vagy
@@ -69,7 +69,7 @@ const char * const vertexSource = R"(
             mirroredVp = mirror(mirror(vp, m1), m2);
 
         textCoord = uv;
-		gl_Position = vec4(mirroredVp.x, mirroredVp.y, 0, mirroredVp.z);		// transform vp from modeling space to normalized device space
+		gl_Position = vec4(mirroredVp.x, mirroredVp.y, 0, mirroredVp.z);
 	}
 )";
 
@@ -81,10 +81,10 @@ const char * const fragmentNode = R"(
     uniform sampler2D textureUnit;
     in vec2 textCoord;
 
-	out vec4 outColor;		// computed color of the current pixel
+	out vec4 outColor;
 
 	void main() {
-        outColor = texture(textureUnit, textCoord);	// computed color is the color of the primitive
+        outColor = texture(textureUnit, textCoord);
 	}
 )";
 
@@ -103,6 +103,7 @@ const char * const fragmentEdge = R"(
 
 bool mouseDown = false;
 
+//Some operator overload
 bool operator!=(vec3 a, vec3 b) {
     return (a.x != b.x && a.y != b.y && a.z != b.z);
 }
@@ -115,6 +116,7 @@ bool operator==(vec4 a, vec4 b) {
     return (a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w);
 }
 
+//Global function
 vec3 toHyperbola(vec2 pos) {
     if (pos == vec2(0, 0))
         return vec3(0, 0, 1);
@@ -177,6 +179,7 @@ float hParam = 1.25f;
 float nodeMass = 1.0f;
 float q = 30.0;
 
+//Graph nodes
 class Node {
     unsigned int vaoCircle{}, vboCircle[2]{};
     vec3 hPos;
@@ -209,6 +212,7 @@ class Node {
         texture = new Texture(50, 50, textureVec);
     }
 
+    //For neighbours.
     float f(float dis) {
         if (dis < prefDist - 0.1)
             return -100.85;
@@ -216,6 +220,7 @@ class Node {
         //return fParam * sinhf(dis - prefDist);
     }
 
+    //For not neighbours.
     float h(float dis) {
         if (dis < 0.1)
             return -100.85;
@@ -361,6 +366,7 @@ public:
     }
 
     vec3 force(Node* node) {
+        //Check if node nei.
         bool nei = false;
         for (Node* neiNode : neibours) {
             if (neiNode == node) {
@@ -369,6 +375,7 @@ public:
             }
         }
 
+        //calculate distence
         float dis = distance(node->hyperPos(),hPos);
 
         vec3 ret = normalize(node->hyperPos() - hPos * coshf(dis) / sinhf(dis));
@@ -772,12 +779,15 @@ void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel co
 void onIdle() {
 	long time = glutGet(GLUT_ELAPSED_TIME);
 	if (sortStarted) {
-	    for (int i = 0; i < 100; ++i) {
+	    for (int i = 0; i < 2; ++i) {
             graph.stepSort(0.001);
             ++counter;
         }
 
-	    if (counter > 1000) {
+	    //if u want a smoot animation, comment the following line and change the for cicle i < 500 to i < 10
+	    //sortStarted = false;
+
+	    if (counter > 2000) {
             sortStarted = false;
         }
     }
