@@ -64,6 +64,7 @@ const char * const fragmentSource = R"(
     const float shininess = 100.0f;
     const int maxdepth = 5;
     const float epsilon = 0.01f;
+    uniform float a, b, c;
 
     struct Hit {
         float t;
@@ -75,13 +76,122 @@ const char * const fragmentSource = R"(
         vec3 start, dir, weight;
     };
 
+    struct Sphere{
+        vec3 center;
+        float radius;
+    };
+
+    Hit intersactSphere(Ray ray, Hit besthit){
+        Sphere object;
+        object.radius = 0.3f;
+        object.center = vec3(0,0,0);
+        Hit hit;
+        hit.t = -1;
+        vec3 dist = ray.start - object.center;
+        float a = dot(ray.dir, ray.dir);
+        float b = dot(dist, ray.dir) * 2.0f;
+        float c = dot(dist, dist) - object.radius * object.radius;
+        float discr = b * b - 4.0f * a * c;
+        if (discr < 0) return besthit;
+        float sqrt_discr = sqrt(discr);
+        float t1 = (-b + sqrt_discr) / 2.0f / a;	// t1 >= t2 for sure
+        float t2 = (-b - sqrt_discr) / 2.0f / a;
+        if (t1 <= 0) return besthit;
+        hit.t = (t2 > 0) ? t2 : t1;
+        hit.pos = ray.start + ray.dir * hit.t;
+        hit.normal = (hit.pos - object.center) / object.radius;
+        hit.mat = 1;
+        if (hit.t < besthit.t || besthit.t < 0){
+            return hit;
+        }
+        return besthit;
+    }
+
+//    Hit intersectGoldenThing(Ray ray, Hit besthit, int mat) {
+////        Hit tmpSphere;
+////        tmpSphere.t = -1;
+////        tmpSphere = intersactSphere(ray, tmpSphere);
+////
+////        if (tmpSphere.t > 0) {
+////            ray.start = tmpSphere.pos;
+////        } else {
+////            return besthit;
+////        }
+//
+//        Hit hit;
+//        hit.t = -1;
+//        ray.dir = normalize(ray.dir);
+//        float A = a * ray.dir.x * ray.dir.x + b * ray.dir.y * ray.dir.y;
+//        float B = 2 * a * ray.start.x * ray.dir.x + 2 * b * ray.start.y * ray.dir.y - c * ray.dir.z;
+//        float C = a * ray.start.x * ray.start.x + b * ray.start.y * ray.start.y - c * ray.start.z;
+//        float disc = B * B - 4 * A * C;
+//        if (disc < 0) {
+//            return besthit;
+//        }
+//        float sqrt_discr = sqrt(disc);
+//        float t1 = (-b + sqrt_discr) / (2.0f * a);	// t1 >= t2 for sure
+//        float t2 = (-b - sqrt_discr) / (2.0f * a);
+//
+//        if (t1 <= 0) return besthit;
+//        hit.t = (t2 > 0) ? t2 : t1;
+//
+//        hit.pos = ray.start + ray.dir * hit.t;
+//
+//        vec3 dx = vec3(1, 0, (2 * a * hit.pos.x) / c);
+//        vec3 dy = vec3(0, 1, (2 * b * hit.pos.y) / c);
+//        hit.normal = normalize(cross(dx, dy));
+//
+//        hit.mat = mat;
+//
+//        if ((hit.t < besthit.t || besthit.t < 0)){
+//            return hit;
+//        }
+//        return besthit;
+//    }
+
+    //TODO: ABOSA KOD kivenni atdolgozni!!!!
+    Hit intersectGoldenThing(Ray ray, Hit besthit, int mat) {
+        Hit hit; hit.t = -1;
+        float A=0.5f; float B=0.5f; float C= 0.1f;
+
+        float a = A * ray.dir.x * ray.dir.x + B * ray.dir.y * ray.dir.y;
+        float b = 2.0f * (A * ray.start.x * ray.dir.x + B * ray.start.y * ray.dir.y) - C * ray.dir.z;
+        float c = A * ray.start.x * ray.start.x + B * ray.start.y * ray.start.y - C * ray.start.z;
+
+        float discr = b * b - 4.0f * a * c;
+        if (discr < 0) return hit;
+        float sqrt_discr = sqrt(discr);
+        float t1 = (-b + sqrt_discr) / 2.0f / a;
+        float t2 = (-b - sqrt_discr) / 2.0f / a;
+
+        float radius = 0.3f;
+        if (t1 <= 0) return hit;
+        vec3 hit1 =  ray.start + ray.dir * t1;
+        if(t2>0){
+
+            vec3 hit2 =  ray.start + ray.dir * t2;
+            if(length(hit2) < radius){
+                if(length(hit1) < radius) hit.t = (t2 < t1) ? t2 : t1; else hit.t = t2;
+            }else if(length(hit1) < radius){ hit.t = t1; } else {hit.t = -1; return hit;}
+        }else if(length(hit1) < radius) hit.t = t1; else {hit.t = -1; return hit;}
+
+        hit.pos = ray.start + ray.dir * hit.t;
+
+        hit.normal = normalize(vec3(-2.0f*A*hit.pos.x / C, -2.0f*B*hit.pos.y / C, 1.0f));
+        hit.mat = 2;
+        return hit;
+    }
+
+
+
     const int objFaces = 12;
     uniform vec3 wEye, v[20];
     uniform int planes[objFaces * 3];
     uniform vec3 kd[2], ks[2], F0;
 
-    void getObjPlane(int i, float scale, out vec3 p, out vec3 normal){
-        vec3 p1 = v[planes[3 * i] - 1], p2 = v[planes[3 * i + 1] - 1], p3 = v[planes[3 * i + 2] - 1];
+
+    void getObjPlane(int i, float scale, out vec3 p, out vec3 normal, vec3 trans = vec3(0, 0, 0)){
+        vec3 p1 = v[planes[3 * i] - 1] + trans, p2 = v[planes[3 * i + 1] - 1] + trans, p3 = v[planes[3 * i + 2] - 1] + trans;
         normal = cross(p2 - p1, p3 - p1);
         if (dot(p1, normal) < 0) normal = -normal;
         p = p1 * scale;
@@ -98,7 +208,7 @@ const char * const fragmentSource = R"(
             //not hiited
             if (ti <= epsilon || (ti > hit.t && hit.t > 0)) continue;
 
-            vec3 pintersect = ray.start + ray.dir * ti;
+            vec3 pintersect = (ray.start + ray.dir * ti);
 
             bool outside = false;
             for (int j = 0; j < objFaces; ++j) {
@@ -113,10 +223,15 @@ const char * const fragmentSource = R"(
             }
 
             if (!outside) {
-                hit.t = ti;
-                hit.pos = pintersect;
-                hit.normal = normalize(normal);
-                hit.mat = mat;
+                Hit tmpSphere;
+                tmpSphere.t = -1;
+                tmpSphere = intersactSphere(ray, tmpSphere);
+                if (tmpSphere.t > 0) {
+                    hit.t = ti;
+                    hit.pos = pintersect;
+                    hit.normal = normalize(normal);
+                    hit.mat = mat;
+                }
             }
         }
         return hit;
@@ -174,13 +289,17 @@ const char * const fragmentSource = R"(
         Hit bestHit;
         bestHit.t = -1;
         bestHit = intersectConvexPolyhedronNotFilled(ray, bestHit, 1, 1);
-        bestHit = intersectConvexPolyhedronFilled(ray, bestHit, 0.075f, 2);
+//        bestHit = intersectConvexPolyhedronFilled(ray, bestHit, 0.075, 2);
+        Hit hit = intersectGoldenThing(ray, bestHit, 1);
+	    if (hit.t > 0 && (bestHit.t < 0 || hit.t < bestHit.t))  bestHit = hit;
+//        bestHit = intersactSphere(ray, bestHit);
         if (dot(ray.dir, bestHit.normal) > 0) bestHit.normal = bestHit.normal * (-1);
         return bestHit;
     }
 
     vec3 trace(Ray ray) {
         vec3 outRadiance = vec3(0, 0, 0);
+        int teleported = 0;
         for (int d = 0; d < maxdepth; ++d) {
             Hit hit = firstIntersect(ray);
             if (hit.t < 0) break;
@@ -199,14 +318,23 @@ const char * const fragmentSource = R"(
                 return outRadiance;
             }
             if (hit.mat == 3) {
-                float phi = 72.0f * 3.14 / 180;
-                ray.start = hit.pos + hit.normal * epsilon;
-                /*ray.start.x = ray.start.x * cos(phi) - ray.start.y * sin(phi);
-                ray.start.y = ray.start.x * sin(phi) + ray.start.y * cos(phi);*/
+//                break;
+                if (teleported < 5) {
+                    float phi = 72.0f * 3.14 / 180;
 
-                ray.dir = reflect(ray.dir, hit.normal);
-                ray.dir = ray.dir * cos(phi) + cross(hit.normal, ray.dir) * sin(phi) + hit.normal * hit.normal * ray.dir * (1 - cos(phi));
-                ray.dir = normalize(ray.dir);
+                    ray.start = hit.pos + hit.normal * epsilon;
+                    ray.dir = reflect(ray.dir, hit.normal);
+                    vec3 tmpPoint = ray.start + ray.dir;
+
+                    ray.start = ray.start * cos(phi) + cross(hit.normal, ray.start) * sin(phi) + hit.normal * dot(hit.normal, ray.start) * (1 - cos(phi));
+                    tmpPoint = tmpPoint * cos(phi) + cross(hit.normal, tmpPoint) * sin(phi) + hit.normal * dot(hit.normal, tmpPoint) * (1 - cos(phi));
+                    ray.dir = normalize(tmpPoint - ray.start);
+                    teleported++;
+                } else {
+                    outRadiance += ray.weight * La;
+                    return outRadiance;
+                }
+                d--;
                 continue;
             }
             ray.weight *= F0 + (vec3(1, 1, 1) - F0) * pow(dot(-ray.dir, hit.normal), 5);
@@ -247,9 +375,10 @@ struct Camera {
     }
 };
 
-GPUProgram gpuProgram(false);
+GPUProgram gpuProgram;
 Camera camera;
 bool animate = true;
+float a = 0.5f, b = 0.5f, c = 0.1f;
 
 float F(float n, float k) {
     return ((n - 1) * (n - 1) + k * k) / ((n + 1) * (n + 1) + k * k);
@@ -298,6 +427,9 @@ void onInitialization() {
     gpuProgram.setUniform(vec3(5,5,5), "ks[0]");
     gpuProgram.setUniform(vec3(1,1,1), "ks[1]");
     gpuProgram.setUniform(vec3(F(0.17,3.1), F(0.35,2.7), F(1.5,1.9)), "F0");
+    gpuProgram.setUniform(a, "a");
+    gpuProgram.setUniform(b, "b");
+    gpuProgram.setUniform(c, "c");
 }
 
 // Window has become invalid: Redraw
