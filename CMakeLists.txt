@@ -13,7 +13,7 @@ include_directories(${GTKMM_INCLUDE_DIRS})
 add_executable(Skeleton
         framework.h
         framework.cpp
-        OrbifoldHW2.cpp)
+        GravityHW3.cpp)
         
 
 target_link_libraries(Skeleton GL glut GLU GLEW)
