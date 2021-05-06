@@ -1,5 +1,5 @@
 //=============================================================================================
-// Mintaprogram: Zöld háromszög. Ervenyes 2019. osztol.
+// Mintaprogram: ZÃ¶ld hÃ¶romszÃ¶g. Ervenyes 2019. osztol.
 //
 // A beadott program csak ebben a fajlban lehet, a fajl 1 byte-os ASCII karaktereket tartalmazhat, BOM kihuzando.
 // Tilos:
@@ -18,8 +18,8 @@
 //
 // NYILATKOZAT
 // ---------------------------------------------------------------------------------------------
-// Nev    : 
-// Neptun : 
+// Nev    : SzabÃ³ Bence SÃ¡ndor
+// Neptun : NQB6UO
 // ---------------------------------------------------------------------------------------------
 // ezennel kijelentem, hogy a feladatot magam keszitettem, es ha barmilyen segitseget igenybe vettem vagy
 // mas szellemi termeket felhasznaltam, akkor a forrast es az atvett reszt kommentekben egyertelmuen jeloltem.
@@ -33,121 +33,537 @@
 //=============================================================================================
 #include "framework.h"
 
-// vertex shader in GLSL: It is a Raw string (C++11) since it contains new line characters
-const char * const vertexSource = R"(
-	#version 330				// Shader 3.3
-	precision highp float;		// normal floats, makes no difference on desktop computers
+//---------------------------
+template<class T> struct Dnum { // Dual numbers for automatic derivation
+//---------------------------
+    float f; // function value
+    T d;  // derivatives
+    Dnum(float f0 = 0, T d0 = T(0)) { f = f0, d = d0; }
+    Dnum operator+(Dnum r) { return Dnum(f + r.f, d + r.d); }
+    Dnum operator-(Dnum r) { return Dnum(f - r.f, d - r.d); }
+    Dnum operator*(Dnum r) {
+        return Dnum(f * r.f, f * r.d + d * r.f);
+    }
+    Dnum operator/(Dnum r) {
+        return Dnum(f / r.f, (r.f * d - r.d * f) / r.f / r.f);
+    }
+};
 
-	uniform mat4 MVP;			// uniform variable, the Model-View-Projection transformation matrix
-	layout(location = 0) in vec2 vp;	// Varying input: vp = vertex position is expected in attrib array 0
+// Elementary functions prepared for the chain rule as well
+template<class T> Dnum<T> Exp(Dnum<T> g) { return Dnum<T>(expf(g.f), expf(g.f)*g.d); }
+template<class T> Dnum<T> Sin(Dnum<T> g) { return  Dnum<T>(sinf(g.f), cosf(g.f)*g.d); }
+template<class T> Dnum<T> Cos(Dnum<T>  g) { return  Dnum<T>(cosf(g.f), -sinf(g.f)*g.d); }
+template<class T> Dnum<T> Tan(Dnum<T>  g) { return Sin(g) / Cos(g); }
+template<class T> Dnum<T> Sinh(Dnum<T> g) { return  Dnum<T>(sinh(g.f), cosh(g.f)*g.d); }
+template<class T> Dnum<T> Cosh(Dnum<T> g) { return  Dnum<T>(cosh(g.f), sinh(g.f)*g.d); }
+template<class T> Dnum<T> Tanh(Dnum<T> g) { return Sinh(g) / Cosh(g); }
+template<class T> Dnum<T> Log(Dnum<T> g) { return  Dnum<T>(logf(g.f), g.d / g.f); }
+template<class T> Dnum<T> Pow(Dnum<T> g, float n) {
+    return  Dnum<T>(powf(g.f, n), n * powf(g.f, n - 1) * g.d);
+}
 
-	void main() {
-		gl_Position = vec4(vp.x, vp.y, 0, 1) * MVP;		// transform vp from modeling space to normalized device space
-	}
-)";
+typedef Dnum<vec2> Dnum2;
 
-// fragment shader in GLSL
-const char * const fragmentSource = R"(
-	#version 330			// Shader 3.3
-	precision highp float;	// normal floats, makes no difference on desktop computers
-	
-	uniform vec3 color;		// uniform variable, the color of the primitive
-	out vec4 outColor;		// computed color of the current pixel
+const int tessellationLevel = 20;
 
-	void main() {
-		outColor = vec4(color, 1);	// computed color is the color of the primitive
-	}
-)";
+struct SperpectiveCamera { // 3D camera
+//---------------------------
+    vec3 wEye, wLookat, wVup;   // extrinsic
+    float fov, asp, fp, bp;		// intrinsic
+public:
+    SperpectiveCamera() {
+        asp = (float)windowWidth / windowHeight;
+        fov = 75.0f * (float)M_PI / 180.0f;
+        fp = 1; bp = 20;
+    }
+    mat4 V() { // view matrix: translates the center to the origin
+        vec3 w = normalize(wEye - wLookat);
+        vec3 u = normalize(cross(wVup, w));
+        vec3 v = cross(w, u);
+        return TranslateMatrix(wEye * (-1)) * mat4(u.x, v.x, w.x, 0,
+                                                   u.y, v.y, w.y, 0,
+                                                   u.z, v.z, w.z, 0,
+                                                   0,   0,   0,   1);
+    }
 
-GPUProgram gpuProgram; // vertex and fragment shaders
-unsigned int vao;	   // virtual world on the GPU
+    mat4 P() { // projection matrix
+        return mat4(1 / (tan(fov / 2)*asp), 0,                0,                      0,
+                    0,                      1 / tan(fov / 2), 0,                      0,
+                    0,                      0,                -(fp + bp) / (bp - fp), -1,
+                    0,                      0,                -2 * fp*bp / (bp - fp),  0);
+    }
+};
+
+//---------------------------
+struct OrtogonalCamera { // 3D camera
+//---------------------------
+    vec3 wEye, wLookat, wVup;   // extrinsic
+    float fov, asp, fp, bp;		// intrinsic
+public:
+    OrtogonalCamera() {
+        asp = (float)windowWidth / windowHeight;
+        fov = 75.0f * (float)M_PI / 180.0f;
+        fp = 1; bp = 20;
+    }
+    mat4 V() { // view matrix: translates the center to the origin
+        vec3 w = normalize(wEye - wLookat);
+        vec3 u = normalize(cross(wVup, w));
+        vec3 v = cross(w, u);
+        return TranslateMatrix(wEye * (-1)) * mat4(u.x, v.x, w.x, 0,
+                                                   u.y, v.y, w.y, 0,
+                                                   u.z, v.z, w.z, 0,
+                                                   0,   0,   0,   1);
+    }
+
+    mat4 P() { // projection matrix
+        return mat4(1,                      0,                0,                               0,
+                    0,                      1,                0,                               0,
+                    0,                      0,                -2.0f / (bp - fp),               0,
+                    0,                      0,                -(bp - fp + 2 * fp) / (bp - fp), 1);
+    }
+};
+
+//---------------------------
+struct Material {
+//---------------------------
+    vec3 kd, ks, ka;
+    float shininess;
+};
+
+//---------------------------
+struct Light {
+//---------------------------
+    vec3 La, Le;
+    vec4 wLightPos; // homogeneous coordinates, can be at ideal point
+};
+
+//---------------------------
+class CheckerBoardTexture : public Texture {
+//---------------------------
+public:
+    CheckerBoardTexture(const int width, const int height) : Texture() {
+        std::vector<vec4> image(width * height);
+        const vec4 yellow(1, 1, 0, 1), blue(0, 0, 1, 1);
+        for (int x = 0; x < width; x++) for (int y = 0; y < height; y++) {
+                image[y * width + x] = (x & 1) ^ (y & 1) ? yellow : blue;
+            }
+        create(width, height, image, GL_NEAREST);
+    }
+};
+
+class BasicSphereTexture : public Texture {
+public:
+    BasicSphereTexture() : Texture() {
+        std::vector<vec4> image(10 * 10);
+        const vec4 color((float)(rand() % 255) / 255,(float)(rand() % 255) / 255,(float)(rand() % 255) / 255, 1.0f);
+        for (int x = 0; x < 10; x++)
+            for (int y = 0; y < 10; y++) {
+                image[y * 10 + x] = color;
+            }
+        create(10, 10, image, GL_NEAREST);
+    }
+};
+
+//---------------------------
+struct RenderState {
+//---------------------------
+    mat4	           MVP, M, Minv, V, P;
+    Material *         material;
+    std::vector<Light> lights;
+    Texture *          texture;
+    vec3	           wEye;
+};
+
+//---------------------------
+class Shader : public GPUProgram {
+//---------------------------
+public:
+    virtual void Bind(RenderState state) = 0;
+
+    void setUniformMaterial(const Material& material, const std::string& name) {
+        setUniform(material.kd, name + ".kd");
+        setUniform(material.ks, name + ".ks");
+        setUniform(material.ka, name + ".ka");
+        setUniform(material.shininess, name + ".shininess");
+    }
+
+    void setUniformLight(const Light& light, const std::string& name) {
+        setUniform(light.La, name + ".La");
+        setUniform(light.Le, name + ".Le");
+        setUniform(light.wLightPos, name + ".wLightPos");
+    }
+};
+
+//---------------------------
+class PhongShader : public Shader {
+//---------------------------
+    const char * vertexSource = R"(
+		#version 330
+		precision highp float;
+
+		struct Light {
+			vec3 La, Le;
+			vec4 wLightPos;
+		};
+
+		uniform mat4  MVP, M, Minv; // MVP, Model, Model-inverse
+		uniform Light[8] lights;    // light sources
+		uniform int   nLights;
+		uniform vec3  wEye;         // pos of eye
+
+		layout(location = 0) in vec3  vtxPos;            // pos in modeling space
+		layout(location = 1) in vec3  vtxNorm;      	 // normal in modeling space
+		layout(location = 2) in vec2  vtxUV;
+
+		out vec3 wNormal;		    // normal in world space
+		out vec3 wView;             // view in world space
+		out vec3 wLight[8];		    // light dir in world space
+		out vec2 texcoord;
+
+		void main() {
+			gl_Position = vec4(vtxPos, 1) * MVP; // to NDC
+			// vectors for radiance computation
+			vec4 wPos = vec4(vtxPos, 1) * M;
+			for(int i = 0; i < nLights; i++) {
+				wLight[i] = lights[i].wLightPos.xyz * wPos.w - wPos.xyz * lights[i].wLightPos.w;
+			}
+		    wView  = wEye * wPos.w - wPos.xyz;
+		    wNormal = (Minv * vec4(vtxNorm, 0)).xyz;
+		    texcoord = vtxUV;
+		}
+	)";
+
+    // fragment shader in GLSL
+    const char * fragmentSource = R"(
+		#version 330
+		precision highp float;
+
+		struct Light {
+			vec3 La, Le;
+			vec4 wLightPos;
+		};
+
+		struct Material {
+			vec3 kd, ks, ka;
+			float shininess;
+		};
+
+		uniform Material material;
+		uniform Light[8] lights;    // light sources
+		uniform int   nLights;
+		uniform sampler2D diffuseTexture;
+
+		in  vec3 wNormal;       // interpolated world sp normal
+		in  vec3 wView;         // interpolated world sp view
+		in  vec3 wLight[8];     // interpolated world sp illum dir
+		in  vec2 texcoord;
+
+        out vec4 fragmentColor; // output goes to frame buffer
+
+		void main() {
+			vec3 N = normalize(wNormal);
+			vec3 V = normalize(wView);
+			if (dot(N, V) < 0) N = -N;	// prepare for one-sided surfaces like Mobius or Klein
+			vec3 texColor = texture(diffuseTexture, texcoord).rgb;
+			vec3 ka = material.ka * texColor;
+			vec3 kd = material.kd * texColor;
+
+			vec3 radiance = vec3(0, 0, 0);
+			for(int i = 0; i < nLights; i++) {
+				vec3 L = normalize(wLight[i]);
+				vec3 H = normalize(L + V);
+				float cost = max(dot(N,L), 0), cosd = max(dot(N,H), 0);
+				// kd and ka are modulated by the texture
+				radiance += ka * lights[i].La +
+                           (kd * texColor * cost + material.ks * pow(cosd, material.shininess)) * lights[i].Le;
+			}
+			fragmentColor = vec4(radiance, 1);
+		}
+	)";
+public:
+    PhongShader() { create(vertexSource, fragmentSource, "fragmentColor"); }
+
+    void Bind(RenderState state) {
+        Use(); 		// make this program run
+        setUniform(state.MVP, "MVP");
+        setUniform(state.M, "M");
+        setUniform(state.Minv, "Minv");
+        setUniform(state.wEye, "wEye");
+        setUniform(*state.texture, std::string("diffuseTexture"));
+        setUniformMaterial(*state.material, "material");
+
+        setUniform((int)state.lights.size(), "nLights");
+        for (unsigned int i = 0; i < state.lights.size(); i++) {
+            setUniformLight(state.lights[i], std::string("lights[") + std::to_string(i) + std::string("]"));
+        }
+    }
+};
+
+//---------------------------
+class Geometry {
+//---------------------------
+protected:
+    unsigned int vao, vbo;        // vertex array object
+public:
+    Geometry() {
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        glGenBuffers(1, &vbo); // Generate 1 vertex buffer object
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    }
+    virtual void Draw() = 0;
+    ~Geometry() {
+        glDeleteBuffers(1, &vbo);
+        glDeleteVertexArrays(1, &vao);
+    }
+};
+
+//---------------------------
+class ParamSurface : public Geometry {
+//---------------------------
+    struct VertexData {
+        vec3 position, normal;
+        vec2 texcoord;
+    };
+
+    unsigned int nVtxPerStrip, nStrips;
+public:
+    ParamSurface() { nVtxPerStrip = nStrips = 0; }
+
+    virtual void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) = 0;
+
+    VertexData GenVertexData(float u, float v) {
+        VertexData vtxData;
+        vtxData.texcoord = vec2(u, v);
+        Dnum2 X, Y, Z;
+        Dnum2 U(u, vec2(1, 0)), V(v, vec2(0, 1));
+        eval(U, V, X, Y, Z);
+        vtxData.position = vec3(X.f, Y.f, Z.f);
+        vec3 drdU(X.d.x, Y.d.x, Z.d.x), drdV(X.d.y, Y.d.y, Z.d.y);
+        vtxData.normal = cross(drdU, drdV);
+        return vtxData;
+    }
+
+    void create(int N = tessellationLevel, int M = tessellationLevel) {
+        nVtxPerStrip = (M + 1) * 2;
+        nStrips = N;
+        std::vector<VertexData> vtxData;	// vertices on the CPU
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j <= M; j++) {
+                vtxData.push_back(GenVertexData((float)j / M, (float)i / N));
+                vtxData.push_back(GenVertexData((float)j / M, (float)(i + 1) / N));
+            }
+        }
+        glBufferData(GL_ARRAY_BUFFER, nVtxPerStrip * nStrips * sizeof(VertexData), &vtxData[0], GL_STATIC_DRAW);
+        // Enable the vertex attribute arrays
+        glEnableVertexAttribArray(0);  // attribute array 0 = POSITION
+        glEnableVertexAttribArray(1);  // attribute array 1 = NORMAL
+        glEnableVertexAttribArray(2);  // attribute array 2 = TEXCOORD0
+        // attribute array, components/attribute, component type, normalize?, stride, offset
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(VertexData), (void*)offsetof(VertexData, position));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(VertexData), (void*)offsetof(VertexData, normal));
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(VertexData), (void*)offsetof(VertexData, texcoord));
+    }
+
+    void Draw() {
+        glBindVertexArray(vao);
+        for (unsigned int i = 0; i < nStrips; i++) glDrawArrays(GL_TRIANGLE_STRIP, i *  nVtxPerStrip, nVtxPerStrip);
+    }
+};
+
+//---------------------------
+class Sphere : public ParamSurface {
+//---------------------------
+public:
+    Sphere() { create(); }
+    void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+        U = U * 2.0f * (float)M_PI, V = V * (float)M_PI;
+        X = Cos(U) * Sin(V); Y = Sin(U) * Sin(V); Z = Cos(V);
+    }
+};
+
+float globalMass = 0.1;
+
+struct Mass {
+    vec3 pos;
+    float m;
+    Mass(vec2 pos) : pos(pos.x, pos.y, 1), m(globalMass) {
+        globalMass *= 2;
+    }
+};
+
+class SheetGeo : public ParamSurface {
+    std::vector<Mass> masses;
+public:
+    SheetGeo() { create(); }
+
+    void eval(Dnum2& U, Dnum2& V, Dnum2& X, Dnum2& Y, Dnum2& Z) {
+        U = U * -2.0f;
+        V = V * -2.0f;
+        X = U + 1.0f;
+        Y = V + 1.0f;
+
+
+    }
+
+    void addMass(vec2 pos) {
+        masses.emplace_back(pos);
+    }
+};
+
+struct Ball {
+    Shader *   shader;
+    Material * material;
+    Texture *  texture;
+    Geometry * geometry;
+    vec3 scale, translation, rotationAxis;
+    vec2 velocity;
+    float rotationAngle;
+public:
+    Ball() :
+        scale(vec3(0.03f, 0.03f, 0.03f)), translation(vec3(-0.97f, -0.97f, 0.97)), rotationAxis(0, 0, 1), rotationAngle(0) {
+        shader = new PhongShader();
+        texture = new BasicSphereTexture();
+
+        material = new Material;
+        material->kd = vec3(0.6f, 0.4f, 0.2f);
+        material->ks = vec3(4, 4, 4);
+        material->ka = vec3(0.1f, 0.1f, 0.1f);
+        material->shininess = 100;
+
+        geometry = new Sphere();
+    }
+
+    void setVelocity(vec2 v) {
+        velocity = v;
+    }
+
+    void SetModelingTransform(mat4& M, mat4& Minv) {
+        M = ScaleMatrix(scale) * RotationMatrix(rotationAngle, rotationAxis) * TranslateMatrix(translation);
+        Minv = TranslateMatrix(-translation) * RotationMatrix(-rotationAngle, rotationAxis) * ScaleMatrix(vec3(1 / scale.x, 1 / scale.y, 1 / scale.z));
+    }
+
+    void Animate(float dt) {
+        translation = translation + vec3(velocity.x, velocity.y, 0) * dt;
+        if (translation.x < -1)
+            translation.x = 1;
+        else if (translation.x > 1)
+            translation.x = -1;
+
+        if (translation.y < -1)
+            translation.y = 1;
+        else if (translation.y > 1)
+            translation.y = -1;
+    }
+
+    void Draw(RenderState state) {
+        mat4 M, Minv;
+        SetModelingTransform(M, Minv);
+        state.M = M;
+        state.Minv = Minv;
+        state.MVP = state.M * state.V * state.P;
+        state.material = material;
+        state.texture = texture;
+        shader->Bind(state);
+        geometry->Draw();
+    }
+};
+
+Ball * activeBall;
+
+class Scene {
+    std::vector<Ball *> objects;
+    OrtogonalCamera camera;
+    std::vector<Light> lights;
+public:
+    void Build() {
+        activeBall = new Ball();
+        objects.push_back(activeBall);
+        // Camera
+        camera.wEye = vec3(0, 0, 10);
+        camera.wLookat = vec3(0, 0, 0);
+        camera.wVup = vec3(0, 1, 0);
+
+        // Lights
+        lights.resize(3);
+        lights[0].wLightPos = vec4(5, 5, 4, 0);	// ideal point -> directional light source
+        lights[0].La = vec3(0.1f, 0.1f, 1);
+        lights[0].Le = vec3(1.0f, 1.0f, 1.0f);
+
+        lights[1].wLightPos = vec4(5, 10, 20, 0);	// ideal point -> directional light source
+        lights[1].La = vec3(1.0f, 1.0f, 1.0f);
+        lights[1].Le = vec3(1.0f, 1.0f, 1.0f);
+    }
+
+    void Render() {
+        RenderState state;
+        state.wEye = camera.wEye;
+        state.V = camera.V();
+        state.P = camera.P();
+        state.lights = lights;
+        for (Ball * obj : objects) obj->Draw(state);
+    }
+
+    void addBall(Ball* b) {
+        objects.push_back(b);
+    }
+
+    void Animate(float tstart, float tend) {
+        for (Ball * obj : objects) obj->Animate(tend - tstart);
+    }
+};
+
+Scene scene;
 
 // Initialization, create an OpenGL context
 void onInitialization() {
-	glViewport(0, 0, windowWidth, windowHeight);
-
-	glGenVertexArrays(1, &vao);	// get 1 vao id
-	glBindVertexArray(vao);		// make it active
-
-	unsigned int vbo;		// vertex buffer object
-	glGenBuffers(1, &vbo);	// Generate 1 buffer
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	// Geometry with 24 bytes (6 floats or 3 x 2 coordinates)
-	float vertices[] = { -0.8f, -0.8f, -0.6f, 1.0f, 0.8f, -0.2f };
-	glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
-		sizeof(vertices),  // # bytes
-		vertices,	      	// address
-		GL_STATIC_DRAW);	// we do not change later
-
-	glEnableVertexAttribArray(0);  // AttribArray 0
-	glVertexAttribPointer(0,       // vbo -> AttribArray 0
-		2, GL_FLOAT, GL_FALSE, // two floats/attrib, not fixed-point
-		0, NULL); 		     // stride, offset: tightly packed
-
-	// create program for the GPU
-	gpuProgram.create(vertexSource, fragmentSource, "outColor");
+    srand(time(0));
+    glViewport(0, 0, windowWidth, windowHeight);
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    scene.Build();
 }
 
 // Window has become invalid: Redraw
 void onDisplay() {
-	glClearColor(0, 0, 0, 0);     // background color
-	glClear(GL_COLOR_BUFFER_BIT); // clear frame buffer
-
-	// Set color to (0, 1, 0) = green
-	int location = glGetUniformLocation(gpuProgram.getId(), "color");
-	glUniform3f(location, 0.0f, 1.0f, 0.0f); // 3 floats
-
-	float MVPtransf[4][4] = { 1, 0, 0, 0,    // MVP matrix, 
-							  0, 1, 0, 0,    // row-major!
-							  0, 0, 1, 0,
-							  0, 0, 0, 1 };
-
-	location = glGetUniformLocation(gpuProgram.getId(), "MVP");	// Get the GPU location of uniform variable MVP
-	glUniformMatrix4fv(location, 1, GL_TRUE, &MVPtransf[0][0]);	// Load a 4x4 row-major float matrix to the specified location
-
-	glBindVertexArray(vao);  // Draw call
-	glDrawArrays(GL_TRIANGLES, 0 /*startIdx*/, 3 /*# Elements*/);
-
-	glutSwapBuffers(); // exchange buffers for double buffering
+    glClearColor(0.5f, 0.5f, 0.8f, 1.0f);							// background color
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the screen
+    scene.Render();
+    glutSwapBuffers();									// exchange the two buffers
 }
 
 // Key of ASCII code pressed
-void onKeyboard(unsigned char key, int pX, int pY) {
-	if (key == 'd') glutPostRedisplay();         // if d, invalidate display, i.e. redraw
-}
+void onKeyboard(unsigned char key, int pX, int pY) { }
 
 // Key of ASCII code released
-void onKeyboardUp(unsigned char key, int pX, int pY) {
+void onKeyboardUp(unsigned char key, int pX, int pY) { }
+
+// Mouse click event
+void onMouse(int button, int state, int pX, int pY) {
+    if (state == GLUT_DOWN) {
+        float cX = 2.0f * pX / windowWidth - 1;
+        float cY = 1.0f - 2.0f * pY / windowHeight;
+        activeBall->setVelocity(vec2(cX - activeBall->translation.x, cY - activeBall->translation.y));
+        activeBall = new Ball();
+        scene.addBall(activeBall);
+        glutPostRedisplay();
+    }
 }
 
 // Move mouse with key pressed
-void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the cursor in the coordinate system of the operation system
-	// Convert to normalized device space
-	float cX = 2.0f * pX / windowWidth - 1;	// flip y axis
-	float cY = 1.0f - 2.0f * pY / windowHeight;
-	printf("Mouse moved to (%3.2f, %3.2f)\n", cX, cY);
-}
-
-// Mouse click event
-void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel coordinates of the cursor in the coordinate system of the operation system
-	// Convert to normalized device space
-	float cX = 2.0f * pX / windowWidth - 1;	// flip y axis
-	float cY = 1.0f - 2.0f * pY / windowHeight;
-
-	char * buttonStat;
-	switch (state) {
-	case GLUT_DOWN: buttonStat = "pressed"; break;
-	case GLUT_UP:   buttonStat = "released"; break;
-	}
-
-	switch (button) {
-	case GLUT_LEFT_BUTTON:   printf("Left button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);   break;
-	case GLUT_MIDDLE_BUTTON: printf("Middle button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY); break;
-	case GLUT_RIGHT_BUTTON:  printf("Right button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);  break;
-	}
+void onMouseMotion(int pX, int pY) {
 }
 
 // Idle event indicating that some time elapsed: do animation here
 void onIdle() {
-	long time = glutGet(GLUT_ELAPSED_TIME); // elapsed time since the start of the program
+    static float tend = 0;
+    const float dt = 0.1f; // dt is \94infinitesimal\94
+    float tstart = tend;
+    tend = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
+
+    for (float t = tstart; t < tend; t += dt) {
+        float Dt = fmin(dt, tend - t);
+        scene.Animate(t, t + Dt);
+    }
+    glutPostRedisplay();
 }
