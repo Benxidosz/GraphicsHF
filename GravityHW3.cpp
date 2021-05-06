@@ -33,9 +33,7 @@
 //=============================================================================================
 #include "framework.h"
 
-//---------------------------
-template<class T> struct Dnum { // Dual numbers for automatic derivation
-//---------------------------
+template<class T> struct Dnum {
     float f; // function value
     T d;  // derivatives
     Dnum(float f0 = 0, T d0 = T(0)) { f = f0, d = d0; }
@@ -72,30 +70,7 @@ struct Camera {
 
     virtual mat4 V() = 0;
     virtual mat4 P() = 0;
-};
-
-struct PerspectiveCamera : Camera {
-    PerspectiveCamera() {
-        asp = (float)windowWidth / windowHeight;
-        fov = 75.0f * (float)M_PI / 180.0f;
-        fp = 1; bp = 20;
-    }
-    mat4 V() { // view matrix: translates the center to the origin
-        vec3 w = normalize(wEye - wLookat);
-        vec3 u = normalize(cross(wVup, w));
-        vec3 v = cross(w, u);
-        return TranslateMatrix(wEye * (-1)) * mat4(u.x, v.x, w.x, 0,
-                                                   u.y, v.y, w.y, 0,
-                                                   u.z, v.z, w.z, 0,
-                                                   0,   0,   0,   1);
-    }
-
-    mat4 P() { // projection matrix
-        return mat4(1 / (tan(fov / 2)*asp), 0,                0,                      0,
-                    0,                      1 / tan(fov / 2), 0,                      0,
-                    0,                      0,                -(fp + bp) / (bp - fp), -1,
-                    0,                      0,                -2 * fp*bp / (bp - fp),  0);
-    }
+    virtual void Animate() {  }
 };
 
 struct OrthogonalCamera : Camera {
@@ -122,14 +97,12 @@ struct OrthogonalCamera : Camera {
     }
 };
 
-//---------------------------
 struct Material {
 //---------------------------
     vec3 kd, ks, ka;
     float shininess;
 };
 
-//---------------------------
 struct Light {
 //---------------------------
     vec3 La, Le;
@@ -308,6 +281,7 @@ class SheetShader : public PhongShader {
 		out vec3 wView;             // view in world space
 		out vec3 wLight[8];		    // light dir in world space
 		out vec2 texcoord;
+        out float z;
 
 		void main() {
 			gl_Position = vec4(vtxPos, 1) * MVP; // to NDC
@@ -319,6 +293,7 @@ class SheetShader : public PhongShader {
 		    wView  = wEye * wPos.w - wPos.xyz;
 		    wNormal = (Minv * vec4(vtxNorm, 0)).xyz;
 		    texcoord = vtxUV;
+            z = vtxPos.z;
 		}
 	)";
 
@@ -346,6 +321,7 @@ class SheetShader : public PhongShader {
 		in  vec3 wView;         // interpolated world sp view
 		in  vec3 wLight[8];     // interpolated world sp illum dir
 		in  vec2 texcoord;
+        in float z;
 
         out vec4 fragmentColor; // output goes to frame buffer
 
@@ -354,8 +330,13 @@ class SheetShader : public PhongShader {
 			vec3 V = normalize(wView);
 			if (dot(N, V) < 0) N = -N;	// prepare for one-sided surfaces like Mobius or Klein
 			vec3 texColor = texture(diffuseTexture, texcoord).rgb;
-			vec3 ka = material.ka * texColor;
-			vec3 kd = material.kd * texColor;
+
+            float layer = 1;
+            if (z < -0.05) {
+                layer = floor((1/(abs(z) + 1)) * 10) / 10;
+            }
+			vec3 ka = material.ka * texColor * layer;
+			vec3 kd = material.kd * texColor * layer;
 
 			vec3 radiance = vec3(0, 0, 0);
 			for(int i = 0; i < nLights; i++) {
@@ -369,6 +350,8 @@ class SheetShader : public PhongShader {
 			fragmentColor = vec4(radiance, 1);
 		}
 	)";
+public:
+    SheetShader() { create(vertexSource, fragmentSource, "fragmentColor");}
 };
 
 class Geometry {
@@ -533,7 +516,7 @@ struct Ball : public Object{
 public:
     Ball() : Object(new PhongShader(), new Material, new BasicSphereTexture(getRandomColor()), new Sphere()), velocity(0, 0, 0), active(false) {
         scale = vec3(0.03f, 0.03f, 0.03f);
-        translation = logicPos = vec3(-0.97f, -0.97f, 0.97);
+        translation = logicPos = vec3(-0.97f, -0.97f, 0.03);
 
         material->kd = vec3(0.6f, 0.4f, 0.2f);
         material->ks = vec3(4, 4, 4);
@@ -552,7 +535,6 @@ public:
             float dt = tend - tstart;
             Dnum2 X(logicPos.x, vec2(1, 0));
             Dnum2 Y(logicPos.y, vec2(0, 1));
-
             Dnum2 Z = 0.0f;
             for (Mass &mass : masses) {
                 Dnum2 r = (Dnum2(mass.pos.x) - X) * (Dnum2(mass.pos.x) - X) +
@@ -609,6 +591,51 @@ public:
     }
 };
 
+struct PerspectiveCamera : Camera {
+    Ball * followed;
+
+    PerspectiveCamera() {
+        asp = (float)windowWidth / windowHeight;
+        fov = 75.0f * (float)M_PI / 180.0f;
+        fp = 0.0001; bp = 100000;
+    }
+    mat4 V() { // view matrix: translates the center to the origin
+        vec3 w = normalize(wEye - wLookat);
+        vec3 u = normalize(cross(wVup, w));
+        vec3 v = cross(w, u);
+        return TranslateMatrix(wEye * (-1)) * mat4(u.x, v.x, w.x, 0,
+                                                   u.y, v.y, w.y, 0,
+                                                   u.z, v.z, w.z, 0,
+                                                   0,   0,   0,   1);
+    }
+
+    mat4 P() { // projection matrix
+        return mat4(1 / (tan(fov / 2)*asp), 0,                0,                      0,
+                    0,                      1 / tan(fov / 2), 0,                      0,
+                    0,                      0,                -(fp + bp) / (bp - fp), -1,
+                    0,                      0,                -2 * fp*bp / (bp - fp),  0);
+    }
+    void Animate() {
+        vec3 trans = followed->translation;
+        wEye = trans;
+
+        Dnum2 X(trans.x, vec2(1, 0));
+        Dnum2 Y(trans.y, vec2(0, 1));
+        Dnum2 Z = 0.0f;
+        for (Mass &mass : masses) {
+            Dnum2 r = (Dnum2(mass.pos.x) - X) * (Dnum2(mass.pos.x) - X) +
+                      (Dnum2(mass.pos.y) - Y) * (Dnum2(mass.pos.y) - Y);
+            Z = Z - (Dnum2(mass.m) / (r + r0));
+        }
+
+        vec3 drdU(X.d.x, Y.d.x, Z.d.x), drdV(X.d.y, Y.d.y, Z.d.y);
+        vec3 normal = normalize(cross(drdU, drdV));
+        wVup = normal;
+        wLookat = normalize(cross(normal, cross(followed->velocity, normal))) + trans;
+        wLookat = vec3(0, 0.3, 0);
+    }
+};
+
 vec4 qmul (vec4 q1, vec4 q2) {
     vec3 d1(q1.x, q1.y, q1.z), d2(q2.x, q2.y, q2.z);
     vec3 sol = d2 * q1.w + d1 * q2.w + cross(d1, d2);
@@ -633,6 +660,7 @@ class Scene {
     std::vector<Light> lights;
     std::vector<vec3> startLight;
     bool perspective = false;
+
 public:
     void Build() {
         Material* material = new Material();
@@ -656,9 +684,6 @@ public:
 
         //Perspective camera
         sCamera = new PerspectiveCamera();
-        sCamera->wEye = vec3(-0.97f, -0.97f, 0.97);
-        sCamera->wLookat = vec3(0, 0, 0);
-        sCamera->wVup = vec3(0, 0, 1);
 
         // Lights
         lights.resize(2);
@@ -679,7 +704,10 @@ public:
         state.V = camera->V();
         state.P = camera->P();
         state.lights = lights;
-        for (Object * obj : objects) obj->Draw(state);
+        for (Object * obj : objects)
+            if (!perspective || obj != sCamera->followed) {
+                obj->Draw(state);
+            }
         for (int i = 0; i < objects.size(); ++i) {
             if (!objects[i]->isAlive()) {
                 std::swap(objects[i], objects[objects.size() - 1]);
@@ -696,14 +724,15 @@ public:
     void Animate(float tstart, float tend) {
         for (Object * obj : objects) obj->Animate(tstart, tend);
 
-        vec4 q(cosf(tstart / 4.0f), sinf(tstart / 4.0f) * (cosf(tstart) / 2.0f), sinf(tstart / 4.0f) * (sinf(tstart) / 2.0f), sinf(tstart / 4.0f) * sqrtf(3.0f / 4.0f));
-        vec3 light0 = vec3(lights[0].wLightPos.x, lights[0].wLightPos.y, lights[0].wLightPos.z);
-        vec3 light1 = vec3(lights[1].wLightPos.x, lights[1].wLightPos.y, lights[1].wLightPos.z);
-        light0 = light0 - startLight[1];
-        light1 = light1 - startLight[0];
+        camera->Animate();
 
-//        light0 = Rotate(light0, q);
-//        light1 = Rotate(light1, q);
+        vec4 q(cosf(tstart / 4.0f), sinf(tstart / 4.0f) * (cosf(tstart) / 2.0f), sinf(tstart / 4.0f) * (sinf(tstart) / 2.0f), sinf(tstart / 4.0f) * sqrtf(3.0f / 4.0f));
+
+        vec3 light0 = startLight[0] - startLight[1];
+        vec3 light1 = startLight[1] - startLight[0];
+
+        light0 = Rotate(light0, q);
+        light1 = Rotate(light1, q);
 
         light0 = light0 + startLight[1];
         light1 = light1 + startLight[0];
@@ -716,8 +745,26 @@ public:
             camera = oCamera;
             perspective = false;
         } else {
-            camera = sCamera;
             perspective = true;
+            camera = sCamera;
+            vec3 trans = activeBall->translation;
+            sCamera->wEye = trans;
+
+            Dnum2 X(trans.x, vec2(1, 0));
+            Dnum2 Y(trans.y, vec2(0, 1));
+            Dnum2 Z = 0.0f;
+            for (Mass &mass : masses) {
+                Dnum2 r = (Dnum2(mass.pos.x) - X) * (Dnum2(mass.pos.x) - X) +
+                          (Dnum2(mass.pos.y) - Y) * (Dnum2(mass.pos.y) - Y);
+                Z = Z - (Dnum2(mass.m) / (r + r0));
+            }
+
+            vec3 drdU(X.d.x, Y.d.x, Z.d.x), drdV(X.d.y, Y.d.y, Z.d.y);
+            vec3 normal = normalize(cross(drdU, drdV));
+            sCamera->wVup = normal;
+            sCamera->wLookat = vec3(0, 0.3, 0);
+
+            sCamera->followed = activeBall;
         }
     }
 };
